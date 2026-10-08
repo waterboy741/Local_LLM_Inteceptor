@@ -1,0 +1,10 @@
+/build/
+/CMakeUserPresets.json
+/.cache/
+*.pcap
+*.pcapng
+*.csv
+!tests/fixtures/*.pcap
+!tests/fixtures/*.pcapng
+!tests/fixtures/*.csv
+.DS_Store
