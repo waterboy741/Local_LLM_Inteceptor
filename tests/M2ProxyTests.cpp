@@ -1,6 +1,8 @@
+#include "MockOllama.hpp"
 #include "core/SessionConfig.hpp"
 #include "proxy/ProxyServer.hpp"
 
+#include <QElapsedTimer>
 #include <QHostAddress>
 #include <QPointer>
 #include <QTcpServer>
@@ -8,87 +10,11 @@
 #include <QTimer>
 #include <QtTest>
 
+#include <algorithm>
 #include <memory>
+#include <sys/resource.h>
 
 using namespace interceptor;
-
-// Deliberately small synthetic endpoint, not a reusable HTTP parser. The upstream
-// emits Content-Length requests; chunked client decoding is the proxy's job.
-class MockOllama : public QTcpServer {
-  public:
-    QList<QByteArray> bodies;
-    QList<QByteArray> headers;
-    bool streaming = false;
-    bool stall = false;
-    bool completed = false;
-    bool truncateResponse = false;
-    int disconnectedClients = 0;
-    int responseStatus = 200;
-    QByteArray responseHeaders;
-
-    MockOllama() {
-        connect(this, &QTcpServer::newConnection, this, [this] {
-            while (hasPendingConnections()) {
-                auto *socket = nextPendingConnection();
-                auto buffer = std::make_shared<QByteArray>();
-                connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
-                    ++disconnectedClients;
-                    socket->deleteLater();
-                });
-                connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer] {
-                    buffer->append(socket->readAll());
-                    const auto split = buffer->indexOf("\r\n\r\n");
-                    if (split < 0)
-                        return;
-                    const auto head = buffer->left(split);
-                    qint64 length = 0;
-                    for (const auto &line : head.split('\n')) {
-                        if (line.trimmed().toLower().startsWith("content-length:"))
-                            length = line.mid(line.indexOf(':') + 1).trimmed().toLongLong();
-                    }
-                    if (buffer->size() < split + 4 + length)
-                        return;
-                    headers.append(head);
-                    bodies.append(buffer->mid(split + 4, length));
-                    buffer->remove(0, split + 4 + length);
-                    if (stall)
-                        return;
-                    if (truncateResponse) {
-                        socket->write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
-                        socket->disconnectFromHost();
-                    } else if (streaming) {
-                        const QByteArray first = "{\"response\":\"Hello\",\"done\":false}\n";
-                        const QByteArray last = "{\"response\":\".\",\"done\":true}\n";
-                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
-                                      "Transfer-Encoding: chunked\r\n\r\n");
-                        socket->write(QByteArray::number(first.size(), 16) + "\r\n" + first +
-                                      "\r\n");
-                        QPointer<QTcpSocket> guarded(socket);
-                        QTimer::singleShot(300, this, [this, guarded, last] {
-                            completed = true;
-                            if (guarded) {
-                                guarded->write(QByteArray::number(last.size(), 16) + "\r\n" + last +
-                                               "\r\n0\r\n\r\n");
-                            }
-                        });
-                    } else {
-                        const bool noBody = head.startsWith("HEAD ") || responseStatus == 204 ||
-                                            responseStatus == 304;
-                        socket->write("HTTP/1.1 " + QByteArray::number(responseStatus) +
-                                      " Synthetic\r\nContent-Type: application/json\r\n" +
-                                      (responseStatus == 204
-                                           ? QByteArray()
-                                           : QByteArray("Content-Length: 13\r\n")) +
-                                      responseHeaders + "\r\n" +
-                                      (noBody ? QByteArray() : QByteArray("{\"done\":true}")));
-                    }
-                });
-            }
-        });
-        if (!listen(QHostAddress::LocalHost, 0))
-            qFatal("Cannot listen on synthetic loopback endpoint");
-    }
-};
 
 class M2ProxyTests : public QObject {
     Q_OBJECT
@@ -432,6 +358,206 @@ class M2ProxyTests : public QObject {
         second.write(request("{}"));
         QTRY_COMPARE(mock.headers.size(), 2);
         QVERIFY(!mock.headers.back().toLower().contains("\ncookie:"));
+    }
+
+    void completedConnectionChurnKeepsAdmissionAvailable() {
+        MockOllama mock;
+        ProxyServer proxy;
+        ProxyOptions options;
+        options.maxHistory = 5;
+        QVERIFY(proxy.start(configFor(mock), options));
+        for (int index = 0; index < 40; ++index) {
+            QTcpSocket client;
+            connectClient(client, proxy);
+            QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+            client.write(request("{}"));
+            QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+            client.disconnectFromHost();
+            QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
+        }
+        QCOMPARE(mock.bodies.size(), 40);
+        QCOMPARE(proxy.history().size(), std::size_t(5));
+        proxy.stop();
+    }
+
+    void pipelinedResponsesPreserveOrder() {
+        MockOllama mock;
+        mock.echoBody = true;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(configFor(mock)));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        QByteArray reply;
+        connect(&client, &QTcpSocket::readyRead, this, [&] { reply += client.readAll(); });
+        client.write(request("{\"order\":1}") + request("{\"order\":2}"));
+        QTRY_COMPARE(mock.bodies.size(), 2);
+        QTRY_VERIFY(reply.contains("{\"order\":2}"));
+        QCOMPARE(reply.count("HTTP/1.1 200"), 2);
+        QVERIFY(reply.indexOf("{\"order\":1}") < reply.indexOf("{\"order\":2}"));
+    }
+
+    void endToEndHeadersAndHopRemoval() {
+        MockOllama mock;
+        mock.responseHeaders = "Set-Cookie: synthetic-one=1\r\nSet-Cookie: synthetic-two=2\r\n";
+        ProxyServer proxy;
+        QVERIFY(proxy.start(configFor(mock)));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        auto wire = request("{}");
+        wire.replace("Host:", "Accept: application/json\r\nAccept: text/plain\r\nCookie: "
+                              "first=1\r\nCookie: second=2\r\nConnection: X-Private\r\nX-Private: "
+                              "secret\r\nAuthorization: Bearer synthetic-token\r\nHost:");
+        client.write(wire);
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+        const auto upstream = mock.headers.front();
+        QVERIFY(!upstream.toLower().contains("\nx-private:"));
+        QVERIFY(upstream.contains("Bearer synthetic-token"));
+        QVERIFY(upstream.contains("first=1; second=2"));
+        QList<QByteArray> values;
+        for (const auto &line : upstream.split('\n')) {
+            if (line.toLower().startsWith("accept:"))
+                for (const auto &part : line.mid(line.indexOf(':') + 1).split(','))
+                    values.append(part.trimmed());
+        }
+        QCOMPARE(values, QList<QByteArray>({"application/json", "text/plain"}));
+        QCOMPARE(client.readAll().toLower().count("set-cookie:"), 2);
+    }
+
+    void unsupportedDuplicateHeadersAreRejectedBeforeForwarding() {
+        MockOllama mock;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(configFor(mock)));
+        for (const auto &duplicates :
+             {QByteArray("X-Synthetic: one\r\nX-Synthetic: two\r\n"),
+              QByteArray("Authorization: Bearer one\r\nAuthorization: Bearer two\r\n"),
+              QByteArray("Content-Type: text/plain\r\n")}) {
+            QTcpSocket client;
+            connectClient(client, proxy);
+            QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+            auto wire = request("{}");
+            wire.replace("Host:", duplicates + "Host:");
+            client.write(wire);
+            QTRY_VERIFY(client.bytesAvailable() > 0);
+            QVERIFY(client.readAll().startsWith("HTTP/1.1 400"));
+        }
+        QCOMPARE(mock.bodies.size(), 0);
+        QVERIFY(proxy.history().empty());
+    }
+
+    void retainedBodiesRespectAggregateByteBudget() {
+        MockOllama mock;
+        ProxyServer proxy;
+        ProxyOptions options;
+        options.maxBodyBytes = 4 * 1024 * 1024;
+        options.maxHistory = 100;
+        QVERIFY(proxy.start(configFor(mock), options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body = "{\"prompt\":\"" + QByteArray(3 * 1024 * 1024, 'x') + "\"}";
+        quint64 firstId = 0;
+        for (int index = 0; index < 3; ++index) {
+            client.write(request(body));
+            QTRY_COMPARE(mock.bodies.size(), index + 1);
+            QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+            client.readAll();
+            if (index == 0)
+                firstId = proxy.history().front().id;
+        }
+        const auto history = proxy.history();
+        QCOMPARE(history.size(), std::size_t(2));
+        qsizetype retained = 0;
+        for (const auto &item : history) {
+            QCOMPARE(item.body, body);
+            retained += item.body.size();
+        }
+        QVERIFY(retained <= 8 * 1024 * 1024);
+        QVERIFY(history.front().id > firstId);
+        QVERIFY(history.back().id > history.front().id);
+    }
+
+    void offlineBaseline() {
+        if (!qEnvironmentVariableIsSet("INTERCEPTOR_RUN_BASELINE"))
+            QSKIP("Opt-in measurement: set INTERCEPTOR_RUN_BASELINE=1 and run offlineBaseline.");
+        constexpr int samples = 100;
+        const QByteArray body = "{\"prompt\":\"" + QByteArray(1024, 'a') + "\",\"stream\":false}";
+        const auto waitFor = [](QTcpSocket &socket, const QByteArray &needle) {
+            QElapsedTimer deadline;
+            deadline.start();
+            while (!socket.peek(socket.bytesAvailable()).contains(needle) &&
+                   deadline.elapsed() < 5000) {
+                QCoreApplication::processEvents();
+                QTest::qWait(1);
+            }
+            return socket.peek(socket.bytesAvailable()).contains(needle);
+        };
+        MockOllama mock;
+        ProxyServer proxy;
+        ProxyOptions options;
+        options.maxHistory = 10;
+        QVERIFY(proxy.start(configFor(mock), options));
+        for (const bool proxied : {false, true}) {
+            QTcpSocket client;
+            client.connectToHost(QHostAddress::LocalHost,
+                                 proxied ? proxy.listenPort() : mock.serverPort());
+            QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+            std::vector<double> milliseconds;
+            QElapsedTimer total;
+            total.start();
+            for (int sample = 0; sample < samples; ++sample) {
+                QElapsedTimer timer;
+                timer.start();
+                client.write(request(body));
+                QVERIFY(waitFor(client, "{\"done\":true}"));
+                milliseconds.push_back(timer.nsecsElapsed() / 1000000.0);
+                client.readAll();
+            }
+            const double seconds = total.nsecsElapsed() / 1000000000.0;
+            std::sort(milliseconds.begin(), milliseconds.end());
+            qInfo().noquote() << QString("BASELINE %1 samples=%2 body_bytes=%3 median_ms=%4 "
+                                         "p95_ms=%5 requests_per_s=%6 request_body_bytes_per_s=%7")
+                                     .arg(proxied ? "proxy" : "direct")
+                                     .arg(samples)
+                                     .arg(body.size())
+                                     .arg(milliseconds[samples / 2], 0, 'f', 3)
+                                     .arg(milliseconds[94], 0, 'f', 3)
+                                     .arg(samples / seconds, 0, 'f', 1)
+                                     .arg(samples * body.size() / seconds, 0, 'f', 1);
+        }
+        QCOMPARE(proxy.history().size(), std::size_t(10));
+        for (const bool proxied : {false, true}) {
+            MockOllama stream;
+            stream.streaming = true;
+            ProxyServer streamProxy;
+            QVERIFY(streamProxy.start(configFor(stream)));
+            QTcpSocket client;
+            client.connectToHost(QHostAddress::LocalHost,
+                                 proxied ? streamProxy.listenPort() : stream.serverPort());
+            QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+            QElapsedTimer timer;
+            timer.start();
+            client.write(request("{\"stream\":true}"));
+            QVERIFY(waitFor(client, "Hello"));
+            const double firstByte = timer.nsecsElapsed() / 1000000.0;
+            QVERIFY(!stream.completed);
+            QVERIFY(waitFor(client, "\"done\":true"));
+            qInfo().noquote()
+                << QString(
+                       "BASELINE %1 ndjson_first_payload_ms=%2 completion_ms=%3 mock_gap_ms=300")
+                       .arg(proxied ? "proxy" : "direct")
+                       .arg(firstByte, 0, 'f', 3)
+                       .arg(timer.nsecsElapsed() / 1000000.0, 0, 'f', 3);
+        }
+        rusage usage{};
+        QVERIFY(getrusage(RUSAGE_SELF, &usage) == 0);
+#ifdef Q_OS_MACOS
+        qInfo() << "BASELINE combined_test_process_peak_rss_bytes=" << usage.ru_maxrss;
+#else
+        qInfo() << "BASELINE combined_test_process_peak_rss_kib=" << usage.ru_maxrss;
+#endif
+        qInfo() << "BASELINE concurrency=1 polling_ms=1 history_rows=10 default_body_limit=1048576";
     }
 };
 

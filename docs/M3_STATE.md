@@ -1,0 +1,11 @@
+# M3 saved state — October 9, 2026
+
+M3 offline implementation is complete. Work stopped when the current five-hour Codex usage window reached the user's 10% remaining reserve. No live lab network was used.
+
+The `llm_interceptor` application now offers explicit Observe and Modify modes. Modify supports ordered, scoped JSON field replacement rules and bounded manual holds with an editor, validation, and a changed-path diff preview. A manual edit forwards its exact entered UTF-8 bytes when valid. Forward original, hold timeout, and switching to Observe forward the original bytes. Stop and client disconnect cancel undispatched holds. Audit history records applied actions, original and sent bodies, and failed upstream attempts with 502/504 status. The documented limits and supported Ollama JSON shapes are in [M3_MODIFICATION.md](M3_MODIFICATION.md).
+
+Validation and review: production **COMPLETE**, tests **COMPLETE**, independent review **COMPLETE**. The production and test agents each ran the debug and AddressSanitizer/UndefinedBehaviorSanitizer suites with **4/4 passing**. The reviewer independently ran sanitizer **4/4 passing**. The standard debug preset was rebuilt and passed **4/4** CTest suites after the state was saved. Tests cover rule ordering, nested fields, Unicode, missing fields, exact edits, invalid/oversized/deep JSON, concurrent holds, deadlines, cancellation, disconnects, mode changes, stale IDs, signed-body safeguards, audit outcomes, and the offscreen GUI editing flow. `git diff --check` passed. An M3 release build/test run was not performed.
+
+The M2 completion, application rename, and M3 changes belong to this checkpoint. Inspect `git status --short` before further edits. The rebuilt runnable debug bundle is `build/debug/llm_interceptor.app/Contents/MacOS/llm_interceptor`. M4 helper work is next in the plan; lab-only verification stays in M6.
+
+Known limit: Qt emits an empty-final-chunk diagnostic for completed chunked responses; M2 tests verify complete response bytes and [M2_BASELINE.md](M2_BASELINE.md) documents the diagnostic. The current rule editor accepts a JSON array of rule objects, and array-index traversal within a JSON field path is not supported. Actual Ollama and Wi-Fi behavior have not been lab-verified.

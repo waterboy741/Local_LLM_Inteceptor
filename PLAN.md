@@ -1,6 +1,6 @@
-# Local LLM Interceptor — Development Plan
+# llm_interceptor — Development Plan
 
-Status: Revised October 8, 2026. M0 and M1 are complete under their offline acceptance criteria, each with implementation, testing, and review COMPLETE votes. M2 is next; live lab validation is deferred to M6.
+Status: Revised October 9, 2026. M0 through M3 are complete under their offline acceptance criteria, each with implementation, testing, and independent review COMPLETE votes. M4 is next; live lab validation is deferred to M6.
 
 ## Purpose
 
@@ -135,6 +135,8 @@ Acceptance:
 
 Build the HTTP relay against a deterministic local mock LLM before adding network redirection. Implement endpoint filtering, JSON inspection, history, details, and streaming response forwarding.
 
+Completed October 9, 2026. The local Observe proxy is explicitly started, forwards to the configured HTTP endpoint, and displays matching JSON requests. Offline tests cover the acceptance cases below, including GUI visibility and shutdown. Production, testing, and independent review each returned COMPLETE after the final changes. Debug, release, and sanitizer suites each passed 3/3 registered tests. The repeatable measurements, provisional targets, and limits are in [docs/M2_BASELINE.md](docs/M2_BASELINE.md). Rich request-list filters and metadata remain in M5; Wi-Fi routing and target-device verification remain in M6.
+
 Acceptance:
 - Matching requests appear in the GUI; nonmatching content is not retained.
 - Unmodified body bytes and response content match mock-server expectations.
@@ -144,6 +146,8 @@ Acceptance:
 ### M3 — Manual and Rule-Based Modification (Offline)
 
 Add request holding, JSON editing, diffs, rule configuration, validation, deadlines, and modification audit records.
+
+Completed October 9, 2026 under the offline acceptance criteria. Production, testing, and independent review each returned COMPLETE. Debug and sanitizer builds passed all 4 registered suites; an M3 release run was not performed. See [docs/M3_MODIFICATION.md](docs/M3_MODIFICATION.md) for behavior and limits and [docs/M3_STATE.md](docs/M3_STATE.md) for the saved milestone state. Live target-device behavior remains deferred to M6.
 
 Acceptance:
 - The mock LLM receives exactly the intended modified JSON; unmatched requests remain unchanged.

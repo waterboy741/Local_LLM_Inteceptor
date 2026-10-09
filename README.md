@@ -1,4 +1,4 @@
-# Local LLM Interceptor
+# llm_interceptor
 
 M2 adds an explicitly activated local reverse proxy for Ollama Observe mode. Prepare the configuration, click Start Observe proxy, then set the client Ollama base URL to the displayed loopback listener. Launch performs no listening or network mutation. Clear session or close the window to stop the relay worker. ARP/PF redirection is not implemented.
 
@@ -10,7 +10,7 @@ Requires macOS Command Line Tools, CMake 3.24+, Ninja, and Qt 6.11+ Core, Widget
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug --output-on-failure
-./build/debug/arp_sniffer.app/Contents/MacOS/arp_sniffer
+./build/debug/llm_interceptor.app/Contents/MacOS/llm_interceptor
 ```
 
 The release and sanitizer presets use the same commands with their respective names. Sanitizer configuration checks compiler/linker support for AddressSanitizer and UndefinedBehaviorSanitizer. Tests run offscreen without capture privileges. M0 synthetic fixture checks can also run with `python3 -m unittest discover -s tests -p 'test_m0_fixtures.py' -v`.
@@ -30,3 +30,9 @@ Qt HTTP Server supplies HTTP/1.1 parsing and Qt Network supplies upstream connec
 Limits: 24 accepted downstream sockets, 8 active relays, 32 KiB headers, 4 KiB URL, 100 header fields, 64 KiB upstream read buffer, approximately 64 KiB downstream socket queue, 2-second default transfer timeout and keep-alive idle timeout, 100 default history rows and an independent 8 MiB retained-body cap. Oversized requests are rejected by the mature parser. Settings are configurable through ProxyOptions where exposed; GUI currently offers listen port only. Loopback server IPv4 is accepted by the relay API for synthetic testing; the session GUI selects explicit proxy configuration, allowing loopback upstream; future ARP preflight retains LAN peer requirements. ProxyServer lifecycle/history methods must be called on its owning thread; network/parser work runs on a separate Qt thread.
 
 GPL-3.0-only, Copyright © 2026 waterboy741. Qt HTTP Server is used under its GPLv3 terms. See [LICENSE](LICENSE) and [licensing details](docs/LICENSING.md).
+
+The current request list shows method, configured path, response status, and original JSON body details. Details use the displayed record snapshot, so eviction cannot substitute a different request. Rich metadata and interactive list filtering are deferred to M5. See [offline baseline](docs/M2_BASELINE.md) for repeatable measurements and provisional performance targets.
+
+Repeated request Cookie fields are joined with semicolons; supported standard list-valued fields are joined with commas before Qt Network sends them. Repeated fields outside these supported classes, including unknown custom fields and singleton authentication/content-type fields, return HTTP 400 explicitly instead of silently losing a value. Response Set-Cookie fields remain separate.
+
+M3 adds explicit Modify mode, bounded manual request holds, ordered JSON rules, raw original/edited audit, and JSON path diff previews. Timeout/Observe switching forwards originals; stopping cancels pending holds. See [modification behavior and limits](docs/M3_MODIFICATION.md).

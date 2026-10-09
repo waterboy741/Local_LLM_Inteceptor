@@ -13,6 +13,11 @@ target_link_libraries(m2_proxy_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m2_proxy COMMAND m2_proxy_tests)
 set_tests_properties(m2_proxy PROPERTIES TIMEOUT 60)
 
+qt_add_executable(m3_modification_tests M3ModificationTests.cpp)
+target_link_libraries(m3_modification_tests PRIVATE interceptor_proxy Qt6::Test)
+add_test(NAME m3_modification COMMAND m3_modification_tests)
+set_tests_properties(m3_modification PROPERTIES TIMEOUT 60)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME m0_fixture_integrity

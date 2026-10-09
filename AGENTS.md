@@ -6,7 +6,7 @@ This macOS-first C++20 application uses Qt 6 Widgets, CMake, and Ninja. `src/mai
 
 ## Build, Test, and Development Commands
 
-Run `cmake --preset debug`, `cmake --build --preset debug`, and `ctest --preset debug --output-on-failure` from the root. Shared `release` and `sanitizer` presets use the same commands. The sanitizer preset checks and enables address/undefined sanitizers. Launch `./build/debug/arp_sniffer.app/Contents/MacOS/arp_sniffer`; closing the window quits. Qt lifecycle tests run offscreen without capture privileges. The GUI supports live interface selection, bounded history, details, and filters. The GUI records PCAP, exports retained/displayed CSV rows, and replays offline sessions. Tests use temporary synthetic files and injected writer failures. See README for permissions. Keep personal dependency paths in ignored `CMakeUserPresets.json`.
+Run `cmake --preset debug`, `cmake --build --preset debug`, and `ctest --preset debug --output-on-failure` from the root. Shared `release` and `sanitizer` presets use the same commands. The sanitizer preset checks and enables address/undefined sanitizers. Launch `./build/debug/llm_interceptor.app/Contents/MacOS/llm_interceptor`; closing the window quits. Qt lifecycle tests run offscreen without capture privileges. The GUI supports live interface selection, bounded history, details, and filters. The GUI records PCAP, exports retained/displayed CSV rows, and replays offline sessions. Tests use temporary synthetic files and injected writer failures. See README for permissions. Keep personal dependency paths in ignored `CMakeUserPresets.json`.
 
 ## Coding Style & Naming Conventions
 
@@ -22,4 +22,4 @@ Implementation agent GPT-6.1 Sol with Light efffort owns production code/build/d
 
 ## Commit, Pull Request & Security Guidelines
 
-Use focused, imperative commits. PRs describe behavior, relevant issues, actual validation, and sample CLI output when applicable. Check `git status --short` and `git diff --check` before committing. Capture only authorized traffic. Never commit credentials, sensitive captures, or machine-specific settings; retain ignore rules for build output and recordings while allowing curated fixtures.
+Use focused, imperative commits. After each milestone meets its acceptance criteria and all three COMPLETE votes are recorded, commit the milestone changes and push the commit to the tracked remote branch; verify the push before reporting completion. PRs describe behavior, relevant issues, actual validation, and sample CLI output when applicable. Check `git status --short` and `git diff --check` before committing. Capture only authorized traffic. Never commit credentials, sensitive captures, or machine-specific settings; retain ignore rules for build output and recordings while allowing curated fixtures.

@@ -1,6 +1,7 @@
 #pragma once
 #include "core/SessionConfig.hpp"
 #include <QByteArray>
+#include <QJsonValue>
 #include <QObject>
 #include <memory>
 #include <vector>
@@ -12,11 +13,34 @@ struct ProxyOptions {
     std::size_t maxBodyBytes = 1048576;
     std::size_t maxHistory = 100;
 };
+enum class InterceptionMode { Observe, Modify };
+struct JsonRule {
+    QString id, path, model;
+    QStringList fieldPath;
+    QJsonValue value;
+};
+struct ModificationOptions {
+    InterceptionMode mode = InterceptionMode::Observe;
+    bool holdMatching = false;
+    int holdTimeoutMs = 30000;
+    std::size_t maxHeld = 8, maxEditableBytes = 1048576;
+    std::vector<JsonRule> rules;
+};
+struct HeldRequest {
+    quint64 id;
+    QString path;
+    QByteArray originalBody, proposedBody;
+    int remainingMs;
+    QStringList audit;
+};
 struct ObservedRequest {
     quint64 id;
     QString method, path;
     QByteArray body;
     int status;
+    QByteArray originalBody, modifiedBody;
+    QStringList audit;
+    bool modified = false;
 };
 class ProxyServer : public QObject {
     Q_OBJECT
@@ -27,9 +51,13 @@ class ProxyServer : public QObject {
     void stop();
     quint16 listenPort() const;
     std::vector<ObservedRequest> history() const;
+    bool setModificationOptions(const ModificationOptions &);
+    std::vector<HeldRequest> held() const;
+    bool resolveHeld(quint64 id, const QByteArray &editedBody, bool useOriginal = false);
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    ModificationOptions modification_;
 };
 } // namespace interceptor

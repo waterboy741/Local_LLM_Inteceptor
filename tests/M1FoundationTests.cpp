@@ -1,17 +1,28 @@
+#include "MockOllama.hpp"
 #include "core/BoundedHistory.hpp"
 #include "core/SessionConfig.hpp"
 #include "gui/MainWindow.hpp"
 #include "session/SessionController.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QNetworkInterface>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTextEdit>
 #include <QtTest>
 
+#include <memory>
 #include <stdexcept>
 
 using namespace interceptor;
@@ -228,6 +239,184 @@ class M1FoundationTests : public QObject {
         prepare->click();
         QCOMPARE(controller.state(), SessionController::State::Idle);
         QVERIFY(!controller.config().has_value());
+    }
+
+    void observeRequestsAppearWithExactDetailsAndCloseStopsRelay() {
+        QTcpServer mock;
+        QVERIFY(mock.listen(QHostAddress::LocalHost, 0));
+        int requestsReceived = 0;
+        connect(&mock, &QTcpServer::newConnection, this, [&] {
+            while (mock.hasPendingConnections()) {
+                auto *socket = mock.nextPendingConnection();
+                auto pending = std::make_shared<QByteArray>();
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                connect(socket, &QTcpSocket::readyRead, this, [&, socket, pending] {
+                    pending->append(socket->readAll());
+                    const auto split = pending->indexOf("\r\n\r\n");
+                    if (split < 0)
+                        return;
+                    qint64 length = 0;
+                    for (const auto &line : pending->left(split).split('\n'))
+                        if (line.trimmed().toLower().startsWith("content-length:"))
+                            length = line.mid(line.indexOf(':') + 1).trimmed().toLongLong();
+                    if (pending->size() < split + 4 + length)
+                        return;
+                    ++requestsReceived;
+                    pending->remove(0, split + 4 + length);
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: "
+                                  "application/json\r\nContent-Length: 2\r\n\r\n{}");
+                });
+            }
+        });
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        auto *list = window.findChild<QListWidget *>("observedRequests");
+        auto *details = window.findChild<QTextEdit *>("requestDetails");
+        QVERIFY(start && listenPort && status && list && details);
+        QVERIFY(!start->isEnabled());
+        QCOMPARE(list->count(), 0);
+        listenPort->setValue(0);
+        auto config = validConfig();
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        config.explicitProxy = true;
+        QVERIFY(controller.prepare(config));
+        QVERIFY(start->isEnabled());
+        start->click();
+        const auto endpoint =
+            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body = " { \"prompt\": \"synthetic GUI request\" } ";
+        const auto request = [&](const QByteArray &path) {
+            return "POST " + path +
+                   " HTTP/1.1\r\nHost: example\r\nContent-Type: "
+                   "application/json\r\nContent-Length: " +
+                   QByteArray::number(body.size()) + "\r\n\r\n" + body;
+        };
+        client.write(request("/api/generate"));
+        QTRY_COMPARE(list->count(), 1);
+        list->setCurrentRow(0);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(body));
+        QVERIFY(list->item(0)->text().contains("POST /api/generate"));
+        QVERIFY(list->item(0)->text().contains("200"));
+        client.readAll();
+        client.write(request("/nonmatching"));
+        QTRY_COMPARE(requestsReceived, 2);
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{}"));
+        QTest::qWait(300);
+        QCOMPARE(list->count(), 1);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(body));
+        window.close();
+        QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
+        QCOMPARE(controller.state(), SessionController::State::Idle);
+        QCOMPARE(list->count(), 0);
+        QVERIFY(details->toPlainText().isEmpty());
+    }
+
+    void modifyControlsHoldValidatePreserveEditorAndDisplayAudit() {
+        MockOllama mock;
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *mode = window.findChild<QComboBox *>("interceptionModeInput");
+        auto *hold = window.findChild<QCheckBox *>("holdMatchingInput");
+        auto *rules = window.findChild<QTextEdit *>("rulesInput");
+        auto *apply = window.findChild<QPushButton *>("applyModificationOptionsButton");
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        auto *held = window.findChild<QListWidget *>("heldRequests");
+        auto *originalView = window.findChild<QTextEdit *>("heldOriginalBody");
+        auto *editor = window.findChild<QTextEdit *>("heldBodyEditor");
+        auto *forward = window.findChild<QPushButton *>("forwardEditedButton");
+        auto *history = window.findChild<QListWidget *>("observedRequests");
+        auto *diff = window.findChild<QTextEdit *>("modificationDiff");
+        QVERIFY(mode && hold && rules && apply && start && listenPort && status && held &&
+                originalView && editor && forward && history && diff);
+        QCOMPARE(mode->currentIndex(), 0);
+        mode->setCurrentIndex(1);
+        hold->setChecked(true);
+        rules->setPlainText("[{\"id\":\"gui-proposal\",\"path\":\"/api/"
+                            "generate\",\"fieldPath\":[\"prompt\"],\"value\":\"rule preview\"}]");
+        apply->click();
+        listenPort->setValue(0);
+        auto config = validConfig();
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        config.explicitProxy = true;
+        QVERIFY(controller.prepare(config));
+        start->click();
+        const auto endpoint =
+            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original = " {\"model\":\"fixture\",\"prompt\":\"original\"} ";
+        const auto request = [&] {
+            return "POST /api/generate HTTP/1.1\r\nHost: synthetic\r\nContent-Type: "
+                   "application/json\r\nContent-Length: " +
+                   QByteArray::number(original.size()) + "\r\n\r\n" + original;
+        };
+        client.write(request());
+        QTRY_COMPARE(held->count(), 1);
+        held->setCurrentRow(0);
+        QCOMPARE(originalView->toPlainText(), QString::fromUtf8(original));
+        QCOMPARE(
+            QJsonDocument::fromJson(editor->toPlainText().toUtf8()).object()["prompt"].toString(),
+            QString("rule preview"));
+        editor->setPlainText("{");
+        forward->click();
+        QTest::qWait(300);
+        QCOMPARE(held->count(), 1);
+        QCOMPARE(mock.bodies.size(), 0);
+        QCOMPARE(editor->toPlainText(), QString("{"));
+        const QString edited =
+            QString::fromUtf8(" {\"model\":\"fixture\",\"prompt\":\"manual café 🤖\"} ");
+        editor->setPlainText(edited);
+        QTest::qWait(300);
+        QCOMPARE(editor->toPlainText(), edited);
+        forward->click();
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), edited.toUtf8());
+        QTRY_COMPARE(history->count(), 1);
+        QTRY_COMPARE(held->count(), 0);
+        history->setCurrentRow(0);
+        QVERIFY(diff->toPlainText().contains("manual: edited"));
+        QVERIFY(diff->toPlainText().contains("prompt"));
+        client.readAll();
+        hold->setChecked(false);
+        rules->setPlainText("[{\"id\":\"gui-rule\",\"path\":\"/api/"
+                            "generate\",\"fieldPath\":[\"model\"],\"value\":\"changed-by-rule\"}]");
+        apply->click();
+        client.write(request());
+        QTRY_COMPARE(mock.bodies.size(), 2);
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.back()).object()["model"].toString(),
+                 QString("changed-by-rule"));
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+        client.readAll();
+        hold->setChecked(true);
+        apply->click();
+        client.write(request());
+        QTRY_COMPARE(held->count(), 1);
+        QCOMPARE(mock.bodies.size(), 2);
+        mode->setCurrentIndex(0);
+        apply->click();
+        QTRY_COMPARE(mock.bodies.size(), 3);
+        QCOMPARE(mock.bodies.back(), original);
+        QTRY_COMPARE(held->count(), 0);
+        QTRY_COMPARE(history->count(), 3);
+        history->setCurrentRow(2);
+        QVERIFY(diff->toPlainText().contains("mode Observe: original"));
+        QVERIFY(diff->toPlainText().contains("Unmodified"));
+        QVERIFY(window.close());
+        QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
+        QCOMPARE(controller.state(), SessionController::State::Idle);
     }
 };
 

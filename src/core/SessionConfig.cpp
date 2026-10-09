@@ -1,9 +1,8 @@
 #include "SessionConfig.hpp"
-#include <QHostAddress>
 #include <QRegularExpression>
 namespace interceptor {
 namespace {
-bool validPeer(const QString &value) {
+bool validPeer(const QString &value, bool allowLoopback = false) {
     const auto parts = value.split('.');
     if (parts.size() != 4)
         return false;
@@ -22,7 +21,7 @@ bool validPeer(const QString &value) {
         if (i == 0)
             first = octet;
     }
-    return first > 0 && first != 127 && first < 224;
+    return first > 0 && (first != 127 || allowLoopback) && first < 224;
 }
 } // namespace
 QStringList SessionConfig::validate() const {
@@ -32,7 +31,7 @@ QStringList SessionConfig::validate() const {
         errors << "Enter a valid interface name.";
     if (!validPeer(clientIp))
         errors << "Enter a usable client unicast IPv4 address.";
-    if (!validPeer(serverIp) && !(explicitProxy && QHostAddress(serverIp).isLoopback()))
+    if (!validPeer(serverIp, explicitProxy))
         errors << "Enter a usable server unicast IPv4 address.";
     if (clientIp == serverIp)
         errors << "Client and server addresses must differ.";
