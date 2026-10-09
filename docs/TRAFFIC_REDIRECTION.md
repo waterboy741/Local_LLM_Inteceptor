@@ -8,6 +8,8 @@ A destination MAC address determines which interface receives an Ethernet frame.
 
 ARP maps a next-hop IPv4 address to a link-layer address; changing that mapping changes the Ethernet destination, not the IP destination. See [RFC 826](https://www.rfc-editor.org/info/rfc826/).
 
+All addresses and ports below are illustrative examples. Port 11434 is Ollama's default, not a required application setting. A session configures interface, client IPv4, LLM IPv4, LLM TCP port (1–65535), and API paths; validate them and freeze one immutable snapshot used for preflight, PF matching, and upstream routing. Actual lab values are needed only to activate and validate a live experiment.
+
 Illustrative lab addresses:
 
 | Role | IPv4 address | Symbolic MAC |
@@ -146,4 +148,4 @@ Use a disposable HTTP echo/mock server before involving an LLM. Record results, 
 
 Diagnostic stages in the GUI should distinguish: redirection active, frames received, PF match, proxy connection accepted, request parsed, upstream connected, and response relayed. A green ARP status alone is insufficient evidence of a working interceptor.
 
-Recommendation: proceed with a single-target PF redirect-to-local-proxy proof of concept. The architectural answer is supported by macOS documentation and existing transparent-proxy practice; operational compatibility on this research network remains an M0 acceptance gate.
+Recommendation: proceed with a single-target PF redirect-to-local-proxy proof of concept. The architectural answer is supported by macOS documentation and existing transparent-proxy practice; operational compatibility on this research network is deferred to the M6 lab validation milestone; it does not block offline M0–M5 work.

@@ -1,0 +1,1 @@
+tests/fixtures/m0/*.http -text whitespace=cr-at-eol

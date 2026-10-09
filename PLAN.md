@@ -1,6 +1,6 @@
 # Local LLM Interceptor — Development Plan
 
-Status: Initial proposal, October 8, 2026. No implementation milestones are complete.
+Status: Revised October 8, 2026. M0 and M1 are complete under their offline acceptance criteria, each with implementation, testing, and review COMPLETE votes. M2 is next; live lab validation is deferred to M6.
 
 ## Purpose
 
@@ -18,13 +18,13 @@ The repository currently contains guidelines, ignore rules, and a license, but n
 
 - Stack: C++20, Qt 6 Widgets, CMake, Ninja, and Qt Test.
 - Initial topology: one client, one local LLM server, and one research machine on the same IPv4 layer-2 network.
-- Scope: HTTP traffic only. Initial protocol support is HTTP/1.1 with JSON request bodies; responses may be JSON or streamed server-sent events (SSE).
-- Initial API: configurable host, port, and endpoint paths. Choose the first concrete API adapter after identifying the research server, such as an OpenAI-compatible API or Ollama's native API.
+- Scope: HTTP traffic only. Initial protocol support is HTTP/1.1 with JSON request bodies; responses may be JSON or streamed newline-delimited JSON (NDJSON).
+- Initial API: Ollama native HTTP with session-configured client IPv4, LLM server IPv4, server TCP port, and endpoint paths. Port 11434 is only Ollama's default/example, not a required runtime value. Start synthetic adapter coverage with POST /api/generate; confirm the actual client paths before adapter implementation.
 - The client must retain its configured server address in ARP redirection mode. A separately configured explicit proxy mode will support early development and troubleshooting.
 - IPv6, HTTP/2, HTTP/3, WebSockets, compressed request bodies, and multipart uploads are outside the initial inspection/editing scope. Define and test how unsupported traffic is forwarded or rejected before live use; never silently corrupt it.
 - HTTPS/TLS interception, certificate authorities, and client certificate trust setup are out of scope. Encrypted traffic is never inspected or modified.
 
-These assumptions must be validated against the actual lab before implementing live redirection.
+These assumptions guide offline implementation. Validate them against the actual lab in M6 before claiming live redirection support.
 
 ## User Workflow
 
@@ -50,7 +50,7 @@ Keep packet handling, transport, JSON processing, persistence, and presentation 
 | Request history (`src/storage/`) | Bounded in-memory records, optional sanitized exports, retention, and replay metadata |
 | Shared models (`src/core/`) | Typed configuration, immutable request events, errors, and metrics |
 
-The GUI should not run with elevated privileges. Define a narrow authenticated local IPC boundary for privileged operations, with validation and session-scoped target restrictions. Select the helper installation/signing approach during the macOS feasibility milestone.
+The GUI should not run with elevated privileges. Define a narrow authenticated local IPC boundary for privileged operations, with validation and session-scoped target restrictions. Document helper installation/signing options in M0, implement the selected approach in M4, and verify installation and privileges in the lab in M6.
 
 Use mature protocol and JSON libraries where appropriate. Select dependencies after a focused compatibility, maintenance, licensing, and macOS packaging review; do not implement a production HTTP parser from scratch.
 
@@ -110,17 +110,17 @@ ARP redirection and application interception are separate mechanisms. The implem
 
 ## Milestones and Acceptance Criteria
 
-### M0 — Lab Definition and macOS Feasibility
+### M0 — Offline Definition and macOS Feasibility Design
 
-See [HTTP Traffic Redirection: macOS Design Investigation](docs/TRAFFIC_REDIRECTION.md) for the proposed PF-to-local-proxy packet path, return translation, lifecycle constraints, and proof-of-concept test matrix. This is researched design, not completed live validation.
+See [HTTP Traffic Redirection: macOS Design Investigation](docs/TRAFFIC_REDIRECTION.md) for the proposed PF-to-local-proxy packet path, return translation, lifecycle constraints, and proof-of-concept test matrix. This is researched design, not completed live validation. See [M0 lab definition and evidence record](docs/M0_LAB.md) for the confirmed Ollama/Wi-Fi scope, supported traffic matrix, PF syntax check, and live checks reserved for M6.
 
-Document the client, server software/API, HTTP ports and protocol version, network topology, and representative sanitized request/response samples. Investigate current macOS capture, packet injection, forwarding, transparent proxy integration, privileges, helper lifecycle, and packaging using primary documentation and a disposable lab proof of concept.
+Define the configurable client/server/interface inputs, selected synthetic Ollama API and HTTP/1.1 transport, proposed topology, and synthetic request/response samples. Investigate macOS capture, packet injection, forwarding, transparent proxy integration, privileges, helper lifecycle, and packaging using primary documentation and parse-only checks. Actual lab inventory and disposable network proof belong to M6.
 
 Acceptance:
 - A topology diagram and supported traffic matrix exist in `docs/`.
-- The first API and transport are selected, with sanitized fixtures.
-- A demonstrated design covers both directions of traffic, original-destination routing, loop avoidance, startup rollback, and cleanup.
-- ARP-incompatible networks and unresolved platform limitations are documented. Do not advance live redirection on an unproven routing design.
+- The first API and transport are selected, with sanitized fixtures. The product design accepts configurable research interface, client IPv4, LLM server IPv4, server TCP port (1–65535), and API paths. Validate usable unicast IPv4 addresses and port range; freeze one immutable snapshot for the active session. Selected values consistently drive preflight, PF matching, upstream connections, and diagnostics; reject mismatches rather than routing from HTTP Host. Actual lab addresses are required for live validation, not for defining this configuration contract.
+- A documented design covers both directions of traffic, configured original-destination routing, loop avoidance, startup rollback, cleanup, and unresolved platform questions; it identifies the M6 evidence needed to validate these claims.
+- ARP-incompatible networks and unresolved platform limitations are documented. Offline development may proceed; live operation remains unproven until M6.
 
 ### M1 — Application Foundation
 
@@ -138,20 +138,10 @@ Build the HTTP relay against a deterministic local mock LLM before adding networ
 Acceptance:
 - Matching requests appear in the GUI; nonmatching content is not retained.
 - Unmodified body bytes and response content match mock-server expectations.
-- Tests cover concurrent connections, keep-alive, chunked framing, malformed/truncated messages, disconnects, cancellation, timeouts, and SSE streaming.
+- Tests cover concurrent connections, keep-alive, chunked framing, malformed/truncated messages, disconnects, cancellation, timeouts, and NDJSON streaming.
 - A repeatable baseline reports latency, streaming time-to-first-byte, throughput, and memory under stated limits. Agree on numeric performance targets before live testing.
 
-### M3 — ARP Redirection Integration
-
-Implement the scoped privileged helper and verified network integration from M0. Connect preflight, start/stop, watchdog, and cleanup status to the GUI.
-
-Acceptance:
-- An opt-in test on the authorized isolated lab redirects only the configured pair through the research machine, with the client still using its original server address.
-- LLM requests are visible, responses stream successfully, and representative non-LLM traffic between the pair still works.
-- No forwarding loops occur. Repeated start/stop, partial startup failure, interface loss, and GUI crash have documented recovery results.
-- Offline tests cover ARP parsing, packet bounds, malformed/truncated frames, unsupported types, target validation, and mocked restoration failures.
-
-### M4 — Manual and Rule-Based Modification
+### M3 — Manual and Rule-Based Modification (Offline)
 
 Add request holding, JSON editing, diffs, rule configuration, validation, deadlines, and modification audit records.
 
@@ -160,6 +150,17 @@ Acceptance:
 - Tests cover nested fields, Unicode, missing fields, invalid JSON, oversized bodies, rule ordering, concurrent held requests, deadlines, cancellation, and disconnects.
 - Observe mode cannot apply modifications. Switching modes has explicit behavior for already held requests.
 
+### M4 — Network Helper Integration (Offline)
+
+Implement the scoped helper, preflight/session orchestration, PF rule generation, watchdog, rollback, and cleanup reporting behind an injectable system-operation boundary. Develop with synthetic Ethernet frames, fake neighbor/settings/PF state, and parse-only platform checks. Keep live activation opt-in and explicitly unvalidated.
+
+Acceptance:
+- Offline tests cover ARP parsing and generation, packet bounds, malformed/truncated frames, unsupported types, interface/target validation, and configurable nondefault ports.
+- Generated PF rules and proxy routing derive from one validated session snapshot; tests prove client/interface/server/port scope and loop avoidance by rule construction.
+- Mocked startup failures, watchdog expiry, interface loss, conditional setting restoration, PF token ownership, and owned-state cleanup produce correct rollback/status results.
+- Available PF syntax-only checks pass without installing rules. Dedicated anchor attachment and privilege/packaging prerequisites are documented for M6.
+- Mocked results are labeled as such; active anchors, actual routing, neighbor changes, and recovery are not claimed as verified.
+
 ### M5 — Research Usability and Hardening
 
 Add sanitized request export/import, bounded retention settings, session summaries, and reproducible offline replay into the inspection pipeline. Packet recording and CSV export mentioned in repository guidelines are secondary features; implement them after the core interceptor works, with explicit recording controls and bounded storage.
@@ -167,7 +168,22 @@ Add sanitized request export/import, bounded retention settings, session summari
 Acceptance:
 - Long-running synthetic load stays within configured memory/storage limits and leaves the UI responsive.
 - Exports omit credentials by default and round-trip supported research records. Offline replay cannot accidentally send requests to a live server.
-- Relevant debug, release, and sanitizer checks pass. Packaging and a two-device-or-more lab walkthrough are documented with actual limitations.
+- Relevant debug, release, and sanitizer checks pass. Packaging artifacts and the lab runbook are prepared; installation/privilege and device walkthrough verification are deferred to M6.
+
+### M6 — Authorized Lab Validation
+
+Perform every verification requiring the test Wi-Fi network or actual client/server assets here, after offline work is ready and lab access is available. Record the actual client/API paths, Ollama version/model, addresses, interface, subnet/L2 behavior, server LAN bind/firewall, OS versions, and applicable network policy.
+
+Acceptance:
+- Confirm peer reachability, selected endpoint/protocol, Wi-Fi ARP compatibility, and both-direction MAC/IP delivery using sanitized synthetic traffic first.
+- Demonstrate that the dedicated PF anchor is actively evaluated, a fresh SYN reaches the proxy, and expected state/counters and reverse translation exist.
+- The client keeps its configured server address; the proxy uses the selected server IP/port, including a nondefault-port test. No recursive upstream connections occur.
+- Actual LLM requests are visible and native NDJSON responses stream; representative non-LLM bypass traffic works in both directions. Shorter and longer edited JSON bodies arrive intact and exactly once at the mock server in the real network path before testing edits against Ollama.
+- Repeated start/stop, partial startup failure, interface loss, GUI/helper/proxy failure, existing connections, stale neighbors, and cleanup have measured outcomes. Unrelated PF rules/state/references remain intact.
+- Helper packaging, installation, authentication, required privileges, watchdog behavior, and a multi-device walkthrough are verified with actual limitations.
+- Compare live latency/streaming/throughput against stated targets. Resolve findings and obtain all three COMPLETE votes before claiming live support.
+
+M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review
 
@@ -186,13 +202,15 @@ git diff --check
 
 Record actual results and coverage gaps for each milestone. Mocked restoration tests do not replace live recovery verification.
 
-## Decisions to Resolve Before Implementation
+## Decisions and When to Resolve Them
 
 1. Which LLM server and client applications will be used first, and which API paths do they call?
-2. Do the selected client and server use HTTP/1.1, and do they require SSE streaming or other HTTP features?
+2. Do the selected client and server use HTTP/1.1, and which native Ollama endpoints does the client call? Preserve native NDJSON streaming; SSE is only a future generic transport option.
 3. Are all three machines on the same IPv4 layer-2 segment, and does the network permit peer traffic and ARP changes?
 4. Which macOS version and CPU architecture must the application support?
 5. Which JSON fields and transformations are needed for the first experiment?
 6. What request sizes, concurrency, hold deadlines, and retention limits match the workload?
 
-Recommended development order: M0 → M1 → M2 → M3 → M4 → M5.
+Resolve product defaults, limits, and supported build targets during offline milestones. Actual client paths, network policy, target addresses, and device behavior are lab inputs for M6 and do not block configurable implementation.
+
+Recommended development order: M0 → M1 → M2 → M3 → M4 → M5 → M6 (when lab access is available).

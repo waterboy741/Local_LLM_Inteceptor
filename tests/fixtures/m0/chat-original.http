@@ -1,0 +1,7 @@
+POST /api/chat HTTP/1.1
+Host: 192.0.2.30:11434
+Content-Type: application/json
+Content-Length: 102
+Connection: close
+
+{"model":"synthetic-fixture-model","messages":[{"role":"user","content":"Say hello."}],"stream":false}
