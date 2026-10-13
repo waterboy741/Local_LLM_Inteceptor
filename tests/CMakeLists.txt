@@ -18,6 +18,11 @@ target_link_libraries(m3_modification_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m3_modification COMMAND m3_modification_tests)
 set_tests_properties(m3_modification PROPERTIES TIMEOUT 60)
 
+qt_add_executable(m4_network_tests M4NetworkTests.cpp)
+target_link_libraries(m4_network_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m4_network COMMAND m4_network_tests)
+set_tests_properties(m4_network PROPERTIES TIMEOUT 30)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME m0_fixture_integrity

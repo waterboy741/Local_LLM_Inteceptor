@@ -1,6 +1,6 @@
 # llm_interceptor — Development Plan
 
-Status: Revised October 9, 2026. M0 through M3 are complete under their offline acceptance criteria, each with implementation, testing, and independent review COMPLETE votes. M4 is next; live lab validation is deferred to M6.
+Status: Revised October 12, 2026. M0 through M4 are complete under their offline acceptance criteria, each with implementation, testing, and independent review COMPLETE votes. M5 is next; live lab validation is deferred to M6.
 
 ## Purpose
 
@@ -50,7 +50,7 @@ Keep packet handling, transport, JSON processing, persistence, and presentation 
 | Request history (`src/storage/`) | Bounded in-memory records, optional sanitized exports, retention, and replay metadata |
 | Shared models (`src/core/`) | Typed configuration, immutable request events, errors, and metrics |
 
-The GUI should not run with elevated privileges. Define a narrow authenticated local IPC boundary for privileged operations, with validation and session-scoped target restrictions. Document helper installation/signing options in M0, implement the selected approach in M4, and verify installation and privileges in the lab in M6.
+The GUI should not run with elevated privileges. Define a narrow authenticated local IPC boundary for privileged operations, with validation and session-scoped target restrictions. Document helper installation/signing options in M0. M4 implements the offline command/authorization model and injected orchestration; real IPC transport, signing, installation, and privilege verification belong to M6.
 
 Use mature protocol and JSON libraries where appropriate. Select dependencies after a focused compatibility, maintenance, licensing, and macOS packaging review; do not implement a production HTTP parser from scratch.
 
@@ -156,13 +156,16 @@ Acceptance:
 
 ### M4 — Network Helper Integration (Offline)
 
-Implement the scoped helper, preflight/session orchestration, PF rule generation, watchdog, rollback, and cleanup reporting behind an injectable system-operation boundary. Develop with synthetic Ethernet frames, fake neighbor/settings/PF state, and parse-only platform checks. Keep live activation opt-in and explicitly unvalidated.
+Implement the scoped helper module, offline command/authorization boundary, preflight/session orchestration, PF rule generation, watchdog, rollback, and cleanup reporting behind an injectable system-operation boundary. Develop with synthetic Ethernet frames, fake neighbor/settings/PF state, and parse-only platform checks. Keep live activation opt-in and explicitly unvalidated.
+
+Completed October 12, 2026 under the offline acceptance criteria. Production, testing, and independent review each returned COMPLETE after final fixes. Debug, release, and sanitizer suites each passed 5/5 registered tests; the standard debug preset independently passed 5/5. The generated documentation-address PF sample passed syntax-only validation. See [docs/M4_OFFLINE_HELPER.md](docs/M4_OFFLINE_HELPER.md). A real privileged backend, IPC transport, installation, active anchor verification, and network recovery remain M6 work.
 
 Acceptance:
 - Offline tests cover ARP parsing and generation, packet bounds, malformed/truncated frames, unsupported types, interface/target validation, and configurable nondefault ports.
 - Generated PF rules and proxy routing derive from one validated session snapshot; tests prove client/interface/server/port scope and loop avoidance by rule construction.
 - Mocked startup failures, watchdog expiry, interface loss, conditional setting restoration, PF token ownership, and owned-state cleanup produce correct rollback/status results.
 - Available PF syntax-only checks pass without installing rules. Dedicated anchor attachment and privilege/packaging prerequisites are documented for M6.
+- Offline dispatch rejects unverified/wrong transport peer credentials, wrong session capability/anchor, mismatched frozen snapshots, and unsupported/malformed commands before system operations. Real authenticated IPC transport and helper installation remain M6.
 - Mocked results are labeled as such; active anchors, actual routing, neighbor changes, and recovery are not claimed as verified.
 
 ### M5 — Research Usability and Hardening

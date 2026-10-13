@@ -36,3 +36,5 @@ The current request list shows method, configured path, response status, and ori
 Repeated request Cookie fields are joined with semicolons; supported standard list-valued fields are joined with commas before Qt Network sends them. Repeated fields outside these supported classes, including unknown custom fields and singleton authentication/content-type fields, return HTTP 400 explicitly instead of silently losing a value. Response Set-Cookie fields remain separate.
 
 M3 adds explicit Modify mode, bounded manual request holds, ordered JSON rules, raw original/edited audit, and JSON path diff previews. Timeout/Observe switching forwards originals; stopping cancels pending holds. See [modification behavior and limits](docs/M3_MODIFICATION.md).
+
+M4 adds the offline network-helper module with synthetic ARP/PF plans, injected preflight/lifecycle operations, conditional rollback, and watchdog/recovery ownership tests. No real network backend or GUI ARP activation is available. See [offline helper design and limitations](docs/M4_OFFLINE_HELPER.md).
