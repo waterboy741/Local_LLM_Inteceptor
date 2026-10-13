@@ -25,12 +25,14 @@ jobs:
         shell: bash
         run: |
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qtbase):$(brew --prefix qthttpserver):$(brew --prefix qtwebsockets)" >> "$GITHUB_ENV"
+          echo "Qt6HttpServer_DIR=$(brew --prefix qthttpserver)/lib/cmake/Qt6HttpServer" >> "$GITHUB_ENV"
+          echo "Qt6WebSockets_DIR=$(brew --prefix qtwebsockets)/lib/cmake/Qt6WebSockets" >> "$GITHUB_ENV"
 
       - name: Configure, build, and test every preset
         shell: bash
         run: |
           for preset in debug release sanitizer; do
-            cmake --preset "$preset"
+            cmake --preset "$preset" -DQt6HttpServer_DIR="$Qt6HttpServer_DIR" -DQt6WebSockets_DIR="$Qt6WebSockets_DIR"
             cmake --build --preset "$preset" --parallel 3
             ctest --preset "$preset" --output-on-failure
           done
