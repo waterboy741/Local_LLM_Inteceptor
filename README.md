@@ -15,6 +15,8 @@ ctest --preset debug --output-on-failure
 
 The release and sanitizer presets use the same commands with their respective names. Sanitizer configuration checks compiler/linker support for AddressSanitizer and UndefinedBehaviorSanitizer. Tests run offscreen without capture privileges. M0 synthetic fixture checks can also run with `python3 -m unittest discover -s tests -p 'test_m0_fixtures.py' -v`.
 
+GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner for every push and pull request. The workflow installs Qt 6.11+ and Ninja, builds the application, and runs the same CTest suites; it performs no live network activation.
+
 ## Configuration and permissions
 
 Select a research interface from the detected interface list, then enter distinct client/server unicast IPv4 addresses, a server TCP port from 1 to 65535, and comma-separated API paths. Port 11434 is the default example for Ollama and can be changed. The interface list reads current system interface names and descriptions without changing network settings; it includes inactive and loopback interfaces. Preparation stores the canonical interface name, validates syntax, and freezes a copy; lab suitability and reachability remain unverified. Use Refresh to update the interface list while idle; it preserves the selected interface if still present. If no interfaces are available, preparation is disabled. Clear the session to change its configuration.

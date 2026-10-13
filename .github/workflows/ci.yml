@@ -1,0 +1,36 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Qt and Ninja
+        run: brew install qtbase qthttpserver ninja
+
+      - name: Locate Qt modules
+        shell: bash
+        run: |
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qtbase):$(brew --prefix qthttpserver):$(brew --prefix qtwebsockets)" >> "$GITHUB_ENV"
+
+      - name: Configure, build, and test every preset
+        shell: bash
+        run: |
+          for preset in debug release sanitizer; do
+            cmake --preset "$preset"
+            cmake --build --preset "$preset" --parallel 3
+            ctest --preset "$preset" --output-on-failure
+          done
