@@ -84,6 +84,15 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     auto *layout = new QVBoxLayout(panel);
     layout->addWidget(
         new QLabel("Prepare configuration, then explicitly start the local Observe proxy.", panel));
+    auto *localDevice = new QCheckBox("Proxy this device", panel);
+    localDevice->setObjectName("localDeviceInput");
+    layout->addWidget(localDevice);
+    auto *localHelp = new QLabel(
+        "For this device, set your Ollama client's base URL to the listener shown after Start. "
+        "Only clients using that URL are proxied.",
+        panel);
+    localHelp->setWordWrap(true);
+    layout->addWidget(localHelp);
     auto *form = new QFormLayout;
     interface_ = new QComboBox(panel);
     interface_->setPlaceholderText("No network interfaces available");
@@ -373,7 +382,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                            "Copyright © 2026 waterboy741\nGPL-3.0-only\nSource and license: "
                            "repository LICENSE and docs/LICENSING.md");
     });
-    const auto refreshInterfaces = [this, prepare] {
+    const auto refreshInterfaces = [this, prepare, localDevice] {
         const QString previous = interface_->currentData().toString();
         interface_->clear();
         for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
@@ -388,7 +397,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (preserved >= 0)
             interface_->setCurrentIndex(preserved);
         prepare->setEnabled(controller_->state() == SessionController::State::Idle &&
-                            interface_->count() > 0);
+                            (localDevice->isChecked() || interface_->count() > 0));
         status_->setText(
             interface_->count() == 0
                 ? "No network interfaces available. Refresh after an interface becomes available."
@@ -396,11 +405,31 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     };
     connect(refresh, &QPushButton::clicked, this, refreshInterfaces);
     refreshInterfaces();
-    connect(prepare, &QPushButton::clicked, this, [this] {
-        SessionConfig config{interface_->currentData().toString(), client_->text(), server_->text(),
-                             port_->value(), paths_->text().split(',')};
+    const auto updateLocalMode = [this, localDevice, prepare, refresh] {
+        const bool idle = controller_->state() == SessionController::State::Idle;
+        const bool local = localDevice->isChecked();
+        interface_->setEnabled(idle && !local);
+        refresh->setEnabled(idle && !local);
+        client_->setEnabled(idle && !local);
+        prepare->setEnabled(idle && (local || interface_->count() > 0));
+        if (idle && local) {
+            if (server_->text().isEmpty())
+                server_->setText("127.0.0.1");
+            status_->setText(
+                "This device — prepare, start, then update your client's Ollama base URL.");
+        }
+    };
+    connect(localDevice, &QCheckBox::toggled, this, [updateLocalMode] { updateLocalMode(); });
+    connect(prepare, &QPushButton::clicked, this, [this, localDevice] {
+        SessionConfig config{localDevice->isChecked() ? QString()
+                                                      : interface_->currentData().toString(),
+                             localDevice->isChecked() ? QString("127.0.0.1") : client_->text(),
+                             server_->text(), port_->value(), paths_->text().split(',')};
         config.explicitProxy = true;
-        const auto errors = config.validate();
+        auto errors = config.validate();
+        if (QHostAddress(config.serverIp).isLoopback() && listenPort_->value() != 0 &&
+            config.serverPort == listenPort_->value())
+            errors << "LLM port and local listen port must differ for loopback upstreams.";
         if (!errors.isEmpty()) {
             status_->setText(errors.join("\n"));
             return;
@@ -410,16 +439,18 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     });
     connect(stop, &QPushButton::clicked, controller_, &SessionController::stop);
     connect(controller_, &SessionController::stateChanged, this,
-            [this, prepare, refresh](SessionController::State state) {
+            [this, prepare, refresh, localDevice, updateLocalMode](SessionController::State state) {
                 const bool idle = state == SessionController::State::Idle;
                 interface_->setEnabled(idle);
                 refresh->setEnabled(idle);
                 for (auto *input : {client_, server_, paths_})
                     input->setEnabled(idle);
                 port_->setEnabled(idle);
+                localDevice->setEnabled(idle);
                 prepare->setEnabled(idle && interface_->count() > 0);
                 status_->setText(idle ? "Idle — no network changes"
                                       : "Configuration prepared — no network changes");
+                updateLocalMode();
             });
     setCentralWidget(panel);
     resize(680, 660);

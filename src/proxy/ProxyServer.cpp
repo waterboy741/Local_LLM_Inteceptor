@@ -11,6 +11,7 @@
 #include <QJsonParseError>
 #include <QMetaEnum>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QPointer>
 #include <QSet>
@@ -188,6 +189,7 @@ class Engine : public QAbstractHttpServer {
     std::size_t retainedBytes = 0;
     Engine(SessionConfig value, ProxyOptions limits)
         : config(std::move(value)), options(std::move(limits)) {
+        manager.setProxy(QNetworkProxy::NoProxy);
         QHttpServerConfiguration limitsConfig;
         limitsConfig.setMaximumBodySize(static_cast<qint64>(options.maxBodyBytes));
         limitsConfig.setMaximumUrlSize(4096);
@@ -212,8 +214,15 @@ class Engine : public QAbstractHttpServer {
         holdTimer.start();
     }
     bool begin() {
-        return listener.listen(QHostAddress::LocalHost, static_cast<quint16>(options.listenPort)) &&
-               bind(&listener);
+        if (!listener.listen(QHostAddress::LocalHost, static_cast<quint16>(options.listenPort)))
+            return false;
+        // Check the allocated port too: automatic listeners must never relay into themselves.
+        if (QHostAddress(config.serverIp).isLoopback() &&
+            config.serverPort == listener.serverPort()) {
+            listener.close();
+            return false;
+        }
+        return bind(&listener);
     }
     void shutdown() {
         shuttingDown = true;

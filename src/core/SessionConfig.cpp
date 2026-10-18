@@ -1,4 +1,5 @@
 #include "SessionConfig.hpp"
+#include <QHostAddress>
 #include <QRegularExpression>
 namespace interceptor {
 namespace {
@@ -27,13 +28,14 @@ bool validPeer(const QString &value, bool allowLoopback = false) {
 QStringList SessionConfig::validate() const {
     QStringList errors;
     static const QRegularExpression interfacePattern("^[A-Za-z][A-Za-z0-9_.:-]{0,63}$");
-    if (!interfacePattern.match(interfaceName).hasMatch())
+    if (!(explicitProxy && interfaceName.isEmpty() && QHostAddress(clientIp).isLoopback()) &&
+        !interfacePattern.match(interfaceName).hasMatch())
         errors << "Enter a valid interface name.";
-    if (!validPeer(clientIp))
+    if (!validPeer(clientIp, explicitProxy))
         errors << "Enter a usable client unicast IPv4 address.";
     if (!validPeer(serverIp, explicitProxy))
         errors << "Enter a usable server unicast IPv4 address.";
-    if (clientIp == serverIp)
+    if (!explicitProxy && clientIp == serverIp)
         errors << "Client and server addresses must differ.";
     if (serverPort < 1 || serverPort > 65535)
         errors << "Server port must be between 1 and 65535.";

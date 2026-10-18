@@ -77,6 +77,98 @@ class M1FoundationTests : public QObject {
         QVERIFY(!config.validate().isEmpty());
     }
 
+    void explicitProxyAllowsSameDeviceWithoutNetworkInterface() {
+        auto config = validConfig();
+        config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
+        config.serverIp = "127.0.0.1";
+        QVERIFY(config.validate().isEmpty());
+        SessionController controller;
+        QVERIFY(controller.prepare(config));
+        QCOMPARE(controller.config()->clientIp, QString("127.0.0.1"));
+        QCOMPARE(controller.config()->serverIp, QString("127.0.0.1"));
+        QVERIFY(controller.config()->interfaceName.isEmpty());
+        config.explicitProxy = false;
+        QVERIFY(!config.validate().isEmpty());
+    }
+
+    void localDeviceGuiPreparesWithoutInterfaceOrSeparateClient() {
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
+        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
+        auto *client = window.findChild<QLineEdit *>("clientIpInput");
+        auto *server = window.findChild<QLineEdit *>("serverIpInput");
+        auto *prepare = window.findChild<QPushButton *>("prepareButton");
+        QVERIFY(local && interfaces && client && server && prepare);
+        server->clear();
+        local->setChecked(true);
+        QCOMPARE(server->text(), QString("127.0.0.1"));
+        QVERIFY(!interfaces->isEnabled());
+        QVERIFY(!client->isEnabled());
+        interfaces->clear();
+        client->clear();
+        server->setText("127.0.0.1");
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
+        QVERIFY(controller.config().has_value());
+        QVERIFY(controller.config()->explicitProxy);
+        QCOMPARE(controller.config()->clientIp, QString("127.0.0.1"));
+        QCOMPARE(controller.config()->serverIp, QString("127.0.0.1"));
+        QVERIFY(controller.config()->interfaceName.isEmpty());
+        QVERIFY(!local->isEnabled());
+        controller.stop();
+        QVERIFY(local->isEnabled());
+        QVERIFY(!client->isEnabled());
+        local->setChecked(false);
+        QVERIFY(client->isEnabled());
+    }
+
+    void localClientCanUseRemoteUpstreamOnTheSamePort() {
+        auto config = validConfig();
+        config.interfaceName = "lo0";
+        config.clientIp = "127.0.0.1";
+        config.serverIp = "192.168.1.141";
+        config.serverPort = 11434;
+        config.explicitProxy = true;
+        QVERIFY(config.validate().isEmpty());
+        SessionController controller;
+        QVERIFY(controller.prepare(config));
+        QCOMPARE(controller.config()->serverPort, 11434);
+    }
+
+    void loopbackClientGuiAcceptsRemoteUpstreamOnSamePort() {
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
+        auto *client = window.findChild<QLineEdit *>("clientIpInput");
+        auto *server = window.findChild<QLineEdit *>("serverIpInput");
+        auto *port = window.findChild<QSpinBox *>("serverPortInput");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
+        auto *prepare = window.findChild<QPushButton *>("prepareButton");
+        QVERIFY(interfaces && client && server && port && listenPort && local && prepare);
+        QVERIFY(!local->isChecked());
+        interfaces->clear();
+        interfaces->addItem(QString("lo0"), QVariant(QString("lo0")));
+        interfaces->setCurrentIndex(0);
+        QCOMPARE(interfaces->currentData().toString(), QString("lo0"));
+        client->setText("127.0.0.1");
+        server->setText("192.168.1.141");
+        port->setValue(11434);
+        listenPort->setValue(11434);
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
+        QCOMPARE(controller.config()->interfaceName, QString("lo0"));
+        QCOMPARE(controller.config()->serverIp, QString("192.168.1.141"));
+        controller.stop();
+        server->setText("127.0.0.1");
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Idle);
+        QVERIFY(!controller.config().has_value());
+    }
+
     void preparationUsesIndependentSnapshot() {
         SessionController controller;
         QCOMPARE(controller.state(), SessionController::State::Idle);

@@ -59,6 +59,57 @@ class M2ProxyTests : public QObject {
         proxy.stop();
     }
 
+    void localDeviceRoutesToSeparateLoopbackUpstream() {
+        MockOllama mock;
+        auto config = configFor(mock);
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
+        config.explicitProxy = true;
+        QVERIFY(config.validate().isEmpty());
+        ProxyServer proxy;
+        QVERIFY(proxy.start(config));
+        QVERIFY(proxy.listenPort() != mock.serverPort());
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body = "{\"prompt\":\"local device\",\"stream\":false}";
+        client.write(request(body));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), body);
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QCOMPARE(proxy.history().front().body, body);
+    }
+
+    void localListenerCannotForwardToItselfAndCanRestart_data() {
+        QTest::addColumn<QString>("upstream");
+        QTest::newRow("localhost") << QString("127.0.0.1");
+        QTest::newRow("loopback-alias") << QString("127.0.0.2");
+    }
+
+    void localListenerCannotForwardToItselfAndCanRestart() {
+        QFETCH(QString, upstream);
+        QTcpServer portReservation;
+        QVERIFY(portReservation.listen(QHostAddress::LocalHost, 0));
+        const auto port = portReservation.serverPort();
+        portReservation.close();
+        SessionConfig config;
+        config.clientIp = "127.0.0.1";
+        config.serverIp = upstream;
+        config.serverPort = port;
+        config.explicitProxy = true;
+        ProxyOptions options;
+        options.listenPort = port;
+        ProxyServer proxy;
+        QVERIFY(!proxy.start(config, options));
+        QCOMPARE(proxy.listenPort(), quint16(0));
+        MockOllama mock;
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        QVERIFY(proxy.start(config, options));
+        QCOMPARE(proxy.listenPort(), port);
+    }
+
     void matchingAndBoundedRetention() {
         MockOllama mock;
         ProxyServer proxy;
