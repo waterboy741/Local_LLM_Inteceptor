@@ -2,6 +2,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -14,6 +15,7 @@
 #include <QMessageBox>
 #include <QNetworkInterface>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -22,8 +24,37 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <functional>
+#include <memory>
 namespace interceptor {
 namespace {
+QString readableJson(const QByteArray &raw) {
+    // Bound indentation expansion before asking Qt to allocate the formatted document.
+    constexpr auto maxPrettyBytes = 64 * 1024;
+    constexpr auto maxPrettyDepth = 32;
+    if (raw.size() > maxPrettyBytes)
+        return QString::fromUtf8(raw);
+    int depth = 0;
+    bool quoted = false, escaped = false;
+    for (const auto character : raw) {
+        if (quoted) {
+            if (escaped)
+                escaped = false;
+            else if (character == '\\')
+                escaped = true;
+            else if (character == '"')
+                quoted = false;
+        } else if (character == '"') {
+            quoted = true;
+        } else if (character == '{' || character == '[') {
+            if (++depth > maxPrettyDepth)
+                return QString::fromUtf8(raw);
+        } else if (character == '}' || character == ']') {
+            --depth;
+        }
+    }
+    const auto document = QJsonDocument::fromJson(raw);
+    return QString::fromUtf8(document.isNull() ? raw : document.toJson(QJsonDocument::Indented));
+}
 QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
     if (original == edited)
         return "No changes";
@@ -106,7 +137,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     port_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     port_->setValue(11434);
     port_->setObjectName("serverPortInput");
-    paths_ = new QLineEdit("/api/generate,/api/chat", panel);
+    paths_ = new QLineEdit(SessionConfig{}.apiPaths.join(','), panel);
     paths_->setObjectName("apiPathsInput");
     auto *interfaceRow = new QWidget(panel);
     auto *interfaceLayout = new QHBoxLayout(interfaceRow);
@@ -155,6 +186,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     requestLayout->addWidget(requests_);
     details_ = new QTextEdit(panel);
     details_->setReadOnly(true);
+    details_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     details_->setObjectName("requestDetails");
     requestLayout->addWidget(details_);
     auto *diff = new QTextEdit(requestPage);
@@ -293,9 +325,31 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
             status_->setText("Edit rejected or request expired. Invalid JSON stays held; forward "
                              "the original to continue.");
     });
+    const auto displayedRequest = std::make_shared<quint64>(0);
+    const auto showRequest = [this, diff, displayedRequest] {
+        const auto *item = requests_->currentItem();
+        const auto id = item ? item->data(Qt::UserRole).toULongLong() : 0;
+        // Completed history records are immutable. Parse JSON only when selection changes.
+        if (id == *displayedRequest)
+            return;
+        *displayedRequest = id;
+        const auto rawBody = item ? item->data(Qt::UserRole + 1).toByteArray() : QByteArray();
+        const auto bodyText = readableJson(rawBody);
+        const auto diffText =
+            item ? (item->data(Qt::UserRole + 4).toBool()
+                        ? jsonDiff(rawBody, item->data(Qt::UserRole + 2).toByteArray())
+                        : "Unmodified") +
+                       "\nAudit:\n" + item->data(Qt::UserRole + 3).toString()
+                 : QString();
+        // Replacing a QTextDocument resets scroll and text selection, even for identical text.
+        if (details_->toPlainText() != bodyText)
+            details_->setPlainText(bodyText);
+        if (diff->toPlainText() != diffText)
+            diff->setPlainText(diffText);
+    };
     auto *poll = new QTimer(this);
     poll->setInterval(250);
-    connect(poll, &QTimer::timeout, this, [this, heldList, showHeld] {
+    connect(poll, &QTimer::timeout, this, [this, heldList, showHeld, showRequest] {
         const auto pending = proxy_.held();
         const auto selectedHeld =
             heldList->currentItem() ? heldList->currentItem()->data(Qt::UserRole).toULongLong() : 0;
@@ -323,31 +377,42 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         const auto selected = requests_->currentItem()
                                   ? requests_->currentItem()->data(Qt::UserRole).toULongLong()
                                   : 0;
-        requests_->clear();
-        for (const auto &event : history) {
-            auto *item = new QListWidgetItem(
-                QString("%1 %2 — %3").arg(event.method, event.path).arg(event.status), requests_);
-            item->setData(Qt::UserRole, event.id);
-            item->setData(Qt::UserRole + 1, event.body);
-            item->setData(Qt::UserRole + 2, event.modifiedBody);
-            item->setData(Qt::UserRole + 3, event.audit.join("\n"));
-            item->setData(Qt::UserRole + 4, event.modified);
-            if (event.id == selected)
-                requests_->setCurrentItem(item);
+        const int listScroll = requests_->verticalScrollBar()->value();
+        {
+            const QSignalBlocker blocker(requests_);
+            // Reconcile immutable history IDs in place. Idle polls do not destroy list items.
+            QSet<quint64> retained;
+            for (const auto &event : history)
+                retained.insert(event.id);
+            for (int row = requests_->count() - 1; row >= 0; --row)
+                if (!retained.contains(requests_->item(row)->data(Qt::UserRole).toULongLong()))
+                    delete requests_->takeItem(row);
+            if (selected && !retained.contains(selected))
+                requests_->setCurrentItem(nullptr);
+            for (int row = 0; row < static_cast<int>(history.size()); ++row) {
+                const auto &event = history[row];
+                auto *item = row < requests_->count() ? requests_->item(row) : nullptr;
+                if (!item || item->data(Qt::UserRole).toULongLong() != event.id) {
+                    item = new QListWidgetItem;
+                    requests_->insertItem(row, item);
+                }
+                item->setText(
+                    QString("%1 %2 — %3").arg(event.method, event.path).arg(event.status));
+                item->setData(Qt::UserRole, event.id);
+                item->setData(Qt::UserRole + 1, event.body);
+                item->setData(Qt::UserRole + 2, event.modifiedBody);
+                item->setData(Qt::UserRole + 3, event.audit.join("\n"));
+                item->setData(Qt::UserRole + 4, event.modified);
+                if (event.id == selected && requests_->currentItem() != item)
+                    requests_->setCurrentItem(item);
+            }
         }
+        requests_->verticalScrollBar()->setValue(listScroll);
+        showRequest();
     });
     poll->start();
-    connect(requests_, &QListWidget::currentRowChanged, this, [this, diff](int row) {
-        const auto *item = row >= 0 ? requests_->item(row) : nullptr;
-        diff->setPlainText(item ? (item->data(Qt::UserRole + 4).toBool()
-                                       ? jsonDiff(item->data(Qt::UserRole + 1).toByteArray(),
-                                                  item->data(Qt::UserRole + 2).toByteArray())
-                                       : "Unmodified") +
-                                      "\nAudit:\n" + item->data(Qt::UserRole + 3).toString()
-                                : QString());
-        details_->setPlainText(item ? QString::fromUtf8(item->data(Qt::UserRole + 1).toByteArray())
-                                    : QString());
-    });
+    connect(requests_, &QListWidget::currentItemChanged, this,
+            [showRequest](QListWidgetItem *, QListWidgetItem *) { showRequest(); });
     connect(startProxy, &QPushButton::clicked, this, [this, startProxy, applySettings] {
         if (!applySettings())
             return;

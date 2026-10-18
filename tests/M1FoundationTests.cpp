@@ -14,6 +14,7 @@
 #include <QNetworkInterface>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSet>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -394,7 +395,8 @@ class M1FoundationTests : public QObject {
         client.write(request("/api/generate"));
         QTRY_COMPARE(list->count(), 1);
         list->setCurrentRow(0);
-        QCOMPARE(details->toPlainText(), QString::fromUtf8(body));
+        QCOMPARE(details->toPlainText(),
+                 QString::fromUtf8(QJsonDocument::fromJson(body).toJson(QJsonDocument::Indented)));
         QVERIFY(list->item(0)->text().contains("POST /api/generate"));
         QVERIFY(list->item(0)->text().contains("200"));
         client.readAll();
@@ -403,12 +405,127 @@ class M1FoundationTests : public QObject {
         QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{}"));
         QTest::qWait(300);
         QCOMPARE(list->count(), 1);
-        QCOMPARE(details->toPlainText(), QString::fromUtf8(body));
+        QCOMPARE(details->toPlainText(),
+                 QString::fromUtf8(QJsonDocument::fromJson(body).toJson(QJsonDocument::Indented)));
         window.close();
         QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
         QCOMPARE(controller.state(), SessionController::State::Idle);
         QCOMPARE(list->count(), 0);
         QVERIFY(details->toPlainText().isEmpty());
+    }
+
+    void openAiCompatiblePathIsIncludedInDefaults() {
+        const SessionConfig config;
+        QVERIFY(config.apiPaths.contains("/v1/chat/completions"));
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *paths = window.findChild<QLineEdit *>("apiPathsInput");
+        QVERIFY(paths);
+        QVERIFY(paths->text().split(',').contains("/v1/chat/completions"));
+    }
+
+    void oversizedAndDeepJsonDetailsUseBoundedRawFallback() {
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *list = window.findChild<QListWidget *>("observedRequests");
+        auto *details = window.findChild<QTextEdit *>("requestDetails");
+        QVERIFY(list && details);
+        const auto show = [&](quint64 id, const QByteArray &body) {
+            auto *item = new QListWidgetItem("Synthetic resource-bound record", list);
+            item->setData(Qt::UserRole, id);
+            item->setData(Qt::UserRole + 1, body);
+            list->setCurrentItem(item);
+        };
+        QByteArray deep = "{\"nested\":";
+        deep += QByteArray(128, '[') + "0" + QByteArray(128, ']') + '}';
+        QVERIFY(!QJsonDocument::fromJson(deep).isNull());
+        show(1001, deep);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(deep));
+        const QByteArray large = "{\"content\":\"" + QByteArray(600 * 1024, 'x') + "\"}";
+        QVERIFY(!QJsonDocument::fromJson(large).isNull());
+        show(1002, large);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(large));
+        const QByteArray shallow = "{\"text\":\"brackets [ and { inside strings\"}";
+        show(1003, shallow);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(QJsonDocument::fromJson(shallow).toJson(
+                                             QJsonDocument::Indented)));
+        list->setCurrentRow(-1);
+        QVERIFY(details->toPlainText().isEmpty());
+    }
+
+    void requestDetailsStayScrolledAndPrettyPrintingPreservesRawBodies() {
+        MockOllama mock;
+        SessionController controller;
+        MainWindow window(&controller);
+        window.resize(1100, 700);
+        window.show();
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        auto *list = window.findChild<QListWidget *>("observedRequests");
+        auto *details = window.findChild<QTextEdit *>("requestDetails");
+        QVERIFY(start && listenPort && status && list && details);
+        listenPort->setValue(0);
+        auto config = validConfig();
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        config.explicitProxy = true;
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(controller.prepare(config));
+        start->click();
+        const auto endpoint =
+            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const auto send = [&](const QByteArray &body) {
+            client.write("POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\n"
+                         "Content-Type: application/json\r\nContent-Length: " +
+                         QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        };
+        QByteArray body = " {\"messages\":[";
+        for (int index = 0; index < 180; ++index) {
+            if (index)
+                body += ',';
+            body += "{\"role\":\"user\",\"content\":\"message " + QByteArray::number(index) + "\"}";
+        }
+        body += "]} ";
+        send(body);
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), body);
+        QTRY_COMPARE(list->count(), 1);
+        list->setCurrentRow(0);
+        const auto pretty = QJsonDocument::fromJson(body).toJson(QJsonDocument::Indented);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toByteArray(), body);
+        QTRY_VERIFY(details->verticalScrollBar()->maximum() > 0);
+        details->verticalScrollBar()->setValue(details->verticalScrollBar()->maximum() / 2);
+        const int position = details->verticalScrollBar()->value();
+        QVERIFY(position > 0);
+        QTest::qWait(850);
+        QCOMPARE(details->verticalScrollBar()->value(), position);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        client.readAll();
+        const QByteArray second = " {\"prompt\":\"another request\"} ";
+        send(second);
+        QTRY_COMPARE(mock.bodies.size(), 2);
+        QCOMPARE(mock.bodies.back(), second);
+        QTRY_COMPARE(list->count(), 2);
+        QTest::qWait(550);
+        QCOMPARE(list->currentRow(), 0);
+        QCOMPARE(details->verticalScrollBar()->value(), position);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toByteArray(), body);
+        const QByteArray invalid = " {\"broken\": ] ";
+        // Invalid JSON is deliberately not retained by the relay. Inject a display
+        // record to exercise the viewer fallback without changing that policy.
+        auto *malformed = new QListWidgetItem("Synthetic malformed record", list);
+        malformed->setData(Qt::UserRole, qulonglong(999999));
+        malformed->setData(Qt::UserRole + 1, invalid);
+        list->setCurrentItem(malformed);
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(invalid));
+        window.close();
     }
 
     void modifyControlsHoldValidatePreserveEditorAndDisplayAudit() {
