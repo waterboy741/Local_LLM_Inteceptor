@@ -27,5 +27,7 @@ class MainWindow : public QMainWindow {
     QSpinBox *listenPort_;
     QListWidget *requests_;
     QTextEdit *details_;
+    QListWidget *messageItems_;
+    QTextEdit *messageDetails_;
 };
 } // namespace interceptor

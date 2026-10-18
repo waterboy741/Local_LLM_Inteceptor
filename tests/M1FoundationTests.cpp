@@ -464,7 +464,9 @@ class M1FoundationTests : public QObject {
         auto *status = window.findChild<QLabel *>("sessionStatus");
         auto *list = window.findChild<QListWidget *>("observedRequests");
         auto *details = window.findChild<QTextEdit *>("requestDetails");
-        QVERIFY(start && listenPort && status && list && details);
+        auto *messages = window.findChild<QListWidget *>("messageItems");
+        auto *messageDetails = window.findChild<QTextEdit *>("messageDetails");
+        QVERIFY(start && listenPort && status && list && details && messages && messageDetails);
         listenPort->setValue(0);
         auto config = validConfig();
         config.serverIp = "127.0.0.1";
@@ -498,14 +500,25 @@ class M1FoundationTests : public QObject {
         list->setCurrentRow(0);
         const auto pretty = QJsonDocument::fromJson(body).toJson(QJsonDocument::Indented);
         QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        QCOMPARE(messages->count(), 180);
+        QVERIFY(messages->item(0)->text().contains("message 0"));
+        QVERIFY(messages->item(179)->text().contains("message 179"));
+        messages->setCurrentRow(179);
+        QVERIFY(messageDetails->toPlainText().contains("message 179"));
         QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toByteArray(), body);
         QTRY_VERIFY(details->verticalScrollBar()->maximum() > 0);
         details->verticalScrollBar()->setValue(details->verticalScrollBar()->maximum() / 2);
         const int position = details->verticalScrollBar()->value();
         QVERIFY(position > 0);
+        messages->setCurrentRow(0);
+        QVERIFY(messageDetails->toPlainText().contains("message 0"));
+        QCOMPARE(details->verticalScrollBar()->value(), position);
+        messages->setCurrentRow(179);
         QTest::qWait(850);
         QCOMPARE(details->verticalScrollBar()->value(), position);
         QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        QCOMPARE(messages->count(), 180);
+        QCOMPARE(messages->currentRow(), 179);
         client.readAll();
         const QByteArray second = " {\"prompt\":\"another request\"} ";
         send(second);
@@ -516,6 +529,8 @@ class M1FoundationTests : public QObject {
         QCOMPARE(list->currentRow(), 0);
         QCOMPARE(details->verticalScrollBar()->value(), position);
         QCOMPARE(details->toPlainText(), QString::fromUtf8(pretty));
+        QCOMPARE(messages->count(), 180);
+        QCOMPARE(messages->currentRow(), 179);
         QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toByteArray(), body);
         const QByteArray invalid = " {\"broken\": ] ";
         // Invalid JSON is deliberately not retained by the relay. Inject a display
@@ -525,6 +540,13 @@ class M1FoundationTests : public QObject {
         malformed->setData(Qt::UserRole + 1, invalid);
         list->setCurrentItem(malformed);
         QCOMPARE(details->toPlainText(), QString::fromUtf8(invalid));
+        QCOMPARE(messages->count(), 0);
+        QVERIFY(messageDetails->toPlainText().isEmpty());
+        list->setCurrentRow(1);
+        QCOMPARE(messages->count(), 0);
+        QVERIFY(messageDetails->toPlainText().isEmpty());
+        QCOMPARE(details->toPlainText(),
+                 QString::fromUtf8(QJsonDocument::fromJson(second).toJson(QJsonDocument::Indented)));
         window.close();
     }
 

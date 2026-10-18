@@ -19,6 +19,7 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -184,11 +185,38 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     requests_ = new QListWidget(requestPage);
     requests_->setObjectName("observedRequests");
     requestLayout->addWidget(requests_);
-    details_ = new QTextEdit(panel);
+    auto *requestDetailsSplit = new QSplitter(Qt::Vertical, requestPage);
+    requestLayout->addWidget(requestDetailsSplit);
+    auto *fullJsonSection = new QWidget(requestDetailsSplit);
+    auto *fullJsonLayout = new QVBoxLayout(fullJsonSection);
+    fullJsonLayout->setContentsMargins(0, 0, 0, 0);
+    fullJsonLayout->addWidget(new QLabel("Full JSON", fullJsonSection));
+    details_ = new QTextEdit(fullJsonSection);
     details_->setReadOnly(true);
     details_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     details_->setObjectName("requestDetails");
-    requestLayout->addWidget(details_);
+    fullJsonLayout->addWidget(details_);
+    requestDetailsSplit->addWidget(fullJsonSection);
+    auto *messagesSection = new QWidget(requestDetailsSplit);
+    auto *messagesLayout = new QVBoxLayout(messagesSection);
+    messagesLayout->setContentsMargins(0, 0, 0, 0);
+    messagesLayout->addWidget(new QLabel("Messages", messagesSection));
+    messageItems_ = new QListWidget(messagesSection);
+    messageItems_->setObjectName("messageItems");
+    messagesLayout->addWidget(messageItems_);
+    messageDetails_ = new QTextEdit(messagesSection);
+    messageDetails_->setReadOnly(true);
+    messageDetails_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    messageDetails_->setObjectName("messageDetails");
+    messagesLayout->addWidget(messageDetails_);
+    requestDetailsSplit->addWidget(messagesSection);
+    requestDetailsSplit->setStretchFactor(0, 1);
+    requestDetailsSplit->setStretchFactor(1, 1);
+    connect(messageItems_, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *item) {
+        const auto text = item ? item->data(Qt::UserRole).toString() : QString();
+        if (messageDetails_->toPlainText() != text)
+            messageDetails_->setPlainText(text);
+    });
     auto *diff = new QTextEdit(requestPage);
     diff->setReadOnly(true);
     diff->setObjectName("modificationDiff");
@@ -344,6 +372,33 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         // Replacing a QTextDocument resets scroll and text selection, even for identical text.
         if (details_->toPlainText() != bodyText)
             details_->setPlainText(bodyText);
+        {
+            const QSignalBlocker blocker(messageItems_);
+            messageItems_->clear();
+            messageDetails_->clear();
+            // Display extraction is bounded independently of the retained raw request.
+            if (rawBody.size() <= 1024 * 1024) {
+                const auto document = QJsonDocument::fromJson(rawBody);
+                const auto messages = document.isObject()
+                                          ? document.object().value("messages").toArray()
+                                          : QJsonArray();
+                constexpr int maxDisplayedMessages = 1000;
+                for (int index = 0; index < messages.size() && index < maxDisplayedMessages;
+                     ++index) {
+                    const auto value = messages.at(index);
+                    const auto formatted = readableJson(
+                        QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact));
+                    const auto display = formatted.mid(1, formatted.size() - 2).trimmed();
+                    auto *message = new QListWidgetItem(
+                        QString("%1. %2").arg(index + 1).arg(display.left(160)), messageItems_);
+                    message->setData(Qt::UserRole, display);
+                }
+                if (messages.size() > maxDisplayedMessages)
+                    new QListWidgetItem(QString("… %1 more messages (display limited to 1000)")
+                                            .arg(messages.size() - maxDisplayedMessages),
+                                        messageItems_);
+            }
+        }
         if (diff->toPlainText() != diffText)
             diff->setPlainText(diffText);
     };
@@ -432,11 +487,14 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                 "Could not start the local proxy. Check the selected endpoint and listener port.");
     });
     connect(controller_, &SessionController::stateChanged, this,
-            [this, startProxy](SessionController::State state) {
+            [this, startProxy, displayedRequest](SessionController::State state) {
                 if (state == SessionController::State::Stopping) {
                     proxy_.stop();
+                    *displayedRequest = 0;
                     requests_->clear();
                     details_->clear();
+                    messageItems_->clear();
+                    messageDetails_->clear();
                 }
                 startProxy->setEnabled(state == SessionController::State::Ready);
                 listenPort_->setEnabled(state == SessionController::State::Idle);
