@@ -476,6 +476,8 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
             return;
         ProxyOptions options;
         options.listenPort = listenPort_->value();
+        // A first Ollama request may load the model before sending response headers.
+        options.timeoutMs = 120000;
         if (proxy_.start(*config, options)) {
             status_->setText(QString("Local proxy listening at http://127.0.0.1:%1 — set the "
                                      "client Ollama base URL here")
