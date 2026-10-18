@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QSignalSpy>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTextEdit>
@@ -422,6 +423,13 @@ class M1FoundationTests : public QObject {
         auto *paths = window.findChild<QLineEdit *>("apiPathsInput");
         QVERIFY(paths);
         QVERIFY(paths->text().split(',').contains("/v1/chat/completions"));
+        auto *tabs = window.findChild<QTabWidget *>();
+        auto *requests = window.findChild<QListWidget *>("observedRequests");
+        QVERIFY(tabs && requests);
+        QCOMPARE(tabs->tabText(0), QString("Configuration"));
+        QCOMPARE(tabs->tabText(1), QString("Requests"));
+        QVERIFY(tabs->widget(0)->isAncestorOf(paths));
+        QVERIFY(tabs->widget(1)->isAncestorOf(requests));
     }
 
     void oversizedAndDeepJsonDetailsUseBoundedRawFallback() {
@@ -459,6 +467,7 @@ class M1FoundationTests : public QObject {
         MainWindow window(&controller);
         window.resize(1100, 700);
         window.show();
+        window.findChild<QTabWidget *>()->setCurrentIndex(1);
         auto *start = window.findChild<QPushButton *>("startObserveButton");
         auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
         auto *status = window.findChild<QLabel *>("sessionStatus");
@@ -545,8 +554,8 @@ class M1FoundationTests : public QObject {
         list->setCurrentRow(1);
         QCOMPARE(messages->count(), 0);
         QVERIFY(messageDetails->toPlainText().isEmpty());
-        QCOMPARE(details->toPlainText(),
-                 QString::fromUtf8(QJsonDocument::fromJson(second).toJson(QJsonDocument::Indented)));
+        QCOMPARE(details->toPlainText(), QString::fromUtf8(QJsonDocument::fromJson(second).toJson(
+                                             QJsonDocument::Indented)));
         window.close();
     }
 

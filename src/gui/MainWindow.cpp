@@ -113,7 +113,12 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     Q_ASSERT(controller_);
     setWindowTitle("llm_interceptor");
     auto *panel = new QWidget(this);
-    auto *layout = new QVBoxLayout(panel);
+    auto *mainLayout = new QVBoxLayout(panel);
+    auto *tabs = new QTabWidget(panel);
+    mainLayout->addWidget(tabs);
+    auto *configPage = new QWidget(tabs);
+    auto *layout = new QVBoxLayout(configPage);
+    tabs->addTab(configPage, "Configuration");
     layout->addWidget(
         new QLabel("Prepare configuration, then explicitly start the local Observe proxy.", panel));
     auto *localDevice = new QCheckBox("Proxy this device", panel);
@@ -177,8 +182,6 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     startProxy->setObjectName("startObserveButton");
     startProxy->setEnabled(false);
     layout->addWidget(startProxy);
-    auto *tabs = new QTabWidget(panel);
-    layout->addWidget(tabs);
     auto *requestPage = new QWidget(tabs);
     auto *requestLayout = new QVBoxLayout(requestPage);
     tabs->addTab(requestPage, "Requests");
