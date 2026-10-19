@@ -19,7 +19,7 @@ GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner 
 
 ## Configuration and permissions
 
-To proxy the device running this app, check **Proxy this device**. Leave LLM IPv4 at `127.0.0.1` for Ollama on the same device, or enter the remote Ollama server's IPv4 address. Set LLM TCP port to the real server port (normally `11434`). The local listen port defaults to `11434`, but switches to **Automatic** when the upstream is loopback on that same port. Click **Prepare configuration**, then **Start Observe proxy**. Set your client application's Ollama base URL to the displayed listener address. For example, with a running local Ollama model and the displayed listener port substituted below:
+To proxy the device running this app, check **Proxy this device**. Leave LLM IPv4 at `127.0.0.1` for Ollama on the same device, or enter the remote Ollama server's IPv4 address. Set LLM TCP port to the real server port (normally `11434`). The local listen port defaults to `11434`; when preparing a loopback upstream on that same port, the app switches the listener to **Automatic** to avoid a collision. Click **Prepare configuration**, then **Start Observe proxy**. Set your client application's Ollama base URL to the exact displayed listener address. For example, with a running local Ollama model and the displayed listener port substituted below:
 
 ```sh
 curl http://127.0.0.1:LISTENER_PORT/api/generate -H 'Content-Type: application/json' -d '{"model":"YOUR_INSTALLED_MODEL","prompt":"Hello","stream":false}'

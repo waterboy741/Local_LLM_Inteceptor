@@ -108,7 +108,7 @@ class M1FoundationTests : public QObject {
         server->clear();
         local->setChecked(true);
         QCOMPARE(server->text(), QString("127.0.0.1"));
-        QCOMPARE(listenPort->value(), 0);
+        QCOMPARE(listenPort->value(), 11434);
         QVERIFY(!interfaces->isEnabled());
         QVERIFY(!client->isEnabled());
         interfaces->clear();
@@ -116,6 +116,7 @@ class M1FoundationTests : public QObject {
         server->setText("127.0.0.1");
         prepare->click();
         QCOMPARE(controller.state(), SessionController::State::Ready);
+        QCOMPARE(listenPort->value(), 0);
         QVERIFY(controller.config().has_value());
         QVERIFY(controller.config()->explicitProxy);
         QCOMPARE(controller.config()->clientIp, QString("127.0.0.1"));
@@ -140,6 +141,22 @@ class M1FoundationTests : public QObject {
         SessionController controller;
         QVERIFY(controller.prepare(config));
         QCOMPARE(controller.config()->serverPort, 11434);
+    }
+
+    void localDeviceRemoteUpstreamRetainsDefaultListener() {
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
+        auto *server = window.findChild<QLineEdit *>("serverIpInput");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *prepare = window.findChild<QPushButton *>("prepareButton");
+        QVERIFY(local && server && listenPort && prepare);
+        local->setChecked(true);
+        server->setText("192.168.1.141");
+        QCOMPARE(listenPort->value(), 11434);
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
+        QCOMPARE(listenPort->value(), 11434);
     }
 
     void loopbackClientGuiAcceptsRemoteUpstreamOnSamePort() {

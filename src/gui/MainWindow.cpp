@@ -543,15 +543,15 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (idle && local) {
             if (server_->text().isEmpty())
                 server_->setText("127.0.0.1");
-            if (QHostAddress(server_->text()).isLoopback() &&
-                listenPort_->value() == port_->value())
-                listenPort_->setValue(0);
             status_->setText(
                 "This device — prepare, start, then update your client's Ollama base URL.");
         }
     };
     connect(localDevice, &QCheckBox::toggled, this, [updateLocalMode] { updateLocalMode(); });
     connect(prepare, &QPushButton::clicked, this, [this, localDevice] {
+        if (localDevice->isChecked() && QHostAddress(server_->text()).isLoopback() &&
+            listenPort_->value() == port_->value())
+            listenPort_->setValue(0);
         SessionConfig config{localDevice->isChecked() ? QString()
                                                       : interface_->currentData().toString(),
                              localDevice->isChecked() ? QString("127.0.0.1") : client_->text(),
