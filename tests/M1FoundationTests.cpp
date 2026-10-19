@@ -592,11 +592,12 @@ class M1FoundationTests : public QObject {
         auto *held = window.findChild<QListWidget *>("heldRequests");
         auto *originalView = window.findChild<QTextEdit *>("heldOriginalBody");
         auto *editor = window.findChild<QTextEdit *>("heldBodyEditor");
+        auto *lastEditor = window.findChild<QTextEdit *>("heldLastMessageEditor");
         auto *forward = window.findChild<QPushButton *>("forwardEditedButton");
         auto *history = window.findChild<QListWidget *>("observedRequests");
         auto *diff = window.findChild<QTextEdit *>("modificationDiff");
         QVERIFY(mode && hold && rules && apply && start && listenPort && status && held &&
-                originalView && editor && forward && history && diff);
+                originalView && editor && lastEditor && forward && history && diff);
         QCOMPARE(mode->currentIndex(), 0);
         mode->setCurrentIndex(1);
         hold->setChecked(true);
@@ -625,6 +626,7 @@ class M1FoundationTests : public QObject {
         client.write(request());
         QTRY_COMPARE(held->count(), 1);
         held->setCurrentRow(0);
+        QVERIFY(!lastEditor->isEnabled());
         QCOMPARE(
             originalView->toPlainText(),
             QString::fromUtf8(QJsonDocument::fromJson(original).toJson(QJsonDocument::Indented)));
@@ -679,6 +681,74 @@ class M1FoundationTests : public QObject {
         QVERIFY(window.close());
         QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
         QCOMPARE(controller.state(), SessionController::State::Idle);
+    }
+
+    void heldLastMessageEditorUpdatesOnlyFinalMessage() {
+        MockOllama mock;
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *mode = window.findChild<QComboBox *>("interceptionModeInput");
+        auto *hold = window.findChild<QCheckBox *>("holdMatchingInput");
+        auto *applyMode = window.findChild<QPushButton *>("applyModificationOptionsButton");
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        auto *held = window.findChild<QListWidget *>("heldRequests");
+        auto *editor = window.findChild<QTextEdit *>("heldBodyEditor");
+        auto *lastEditor = window.findChild<QTextEdit *>("heldLastMessageEditor");
+        auto *applyLast = window.findChild<QPushButton *>("applyLastMessageButton");
+        auto *lastStatus = window.findChild<QLabel *>("lastMessageStatus");
+        auto *forward = window.findChild<QPushButton *>("forwardEditedButton");
+        QVERIFY(mode && hold && applyMode && start && listenPort && status && held && editor &&
+                lastEditor && applyLast && lastStatus && forward);
+        mode->setCurrentIndex(1);
+        hold->setChecked(true);
+        applyMode->click();
+        listenPort->setValue(0);
+        auto config = validConfig();
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        config.apiPaths = {"/v1/chat/completions"};
+        config.explicitProxy = true;
+        QVERIFY(controller.prepare(config));
+        start->click();
+        const auto endpoint =
+            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body =
+            R"({"model":"fixture","messages":[{"role":"system","content":"keep"},{"role":"user","content":"old"}]})";
+        client.write("POST /v1/chat/completions HTTP/1.1\r\nHost: synthetic\r\n"
+                     "Content-Type: application/json\r\nContent-Length: " +
+                     QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        QTRY_COMPARE(held->count(), 1);
+        held->setCurrentRow(0);
+        QVERIFY(lastEditor->isEnabled());
+        QVERIFY(lastEditor->toPlainText().contains("old"));
+        lastEditor->setPlainText("{");
+        applyLast->click();
+        QVERIFY(lastStatus->text().contains("valid JSON"));
+        QVERIFY(editor->toPlainText().contains("old"));
+        forward->click();
+        QCOMPARE(mock.bodies.size(), 0);
+        lastEditor->setPlainText(R"({"role":"user","content":"new"})");
+        forward->click();
+        QCOMPARE(mock.bodies.size(), 0);
+        QVERIFY(lastStatus->text().contains("Apply"));
+        applyLast->click();
+        QVERIFY(lastStatus->text().contains("Applied"));
+        const auto edited = QJsonDocument::fromJson(editor->toPlainText().toUtf8());
+        const auto messages = edited.object().value("messages").toArray();
+        QCOMPARE(messages.size(), 2);
+        QCOMPARE(messages[0].toObject().value("content").toString(), QString("keep"));
+        QCOMPARE(messages[1].toObject().value("content").toString(), QString("new"));
+        const auto sentBody = editor->toPlainText().toUtf8();
+        forward->click();
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), sentBody);
+        QVERIFY(window.close());
     }
 };
 

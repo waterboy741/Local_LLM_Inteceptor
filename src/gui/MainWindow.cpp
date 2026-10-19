@@ -56,6 +56,17 @@ QString readableJson(const QByteArray &raw) {
     const auto document = QJsonDocument::fromJson(raw);
     return QString::fromUtf8(document.isNull() ? raw : document.toJson(QJsonDocument::Indented));
 }
+QString lastMessageText(const QByteArray &body) {
+    const auto document = QJsonDocument::fromJson(body);
+    if (!document.isObject())
+        return {};
+    const auto messages = document.object().value("messages").toArray();
+    if (messages.isEmpty())
+        return {};
+    const auto wrapped =
+        readableJson(QJsonDocument(QJsonArray{messages.last()}).toJson(QJsonDocument::Compact));
+    return wrapped.mid(1, wrapped.size() - 2).trimmed();
+}
 QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
     if (original == edited)
         return "No changes";
@@ -333,6 +344,22 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     editor->setObjectName("heldBodyEditor");
     editLayout->addWidget(editor);
     heldDetailsSplit->addWidget(editSection);
+    auto *lastSection = new QWidget(heldDetailsSplit);
+    auto *lastLayout = new QVBoxLayout(lastSection);
+    lastLayout->setContentsMargins(0, 0, 0, 0);
+    lastLayout->addWidget(new QLabel("Last message (JSON)", lastSection));
+    auto *lastEditor = new QTextEdit(lastSection);
+    lastEditor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    lastEditor->setObjectName("heldLastMessageEditor");
+    lastLayout->addWidget(lastEditor);
+    auto *applyLast = new QPushButton("Apply last message to editable JSON", lastSection);
+    applyLast->setObjectName("applyLastMessageButton");
+    lastLayout->addWidget(applyLast);
+    auto *lastStatus = new QLabel(lastSection);
+    lastStatus->setObjectName("lastMessageStatus");
+    lastStatus->setWordWrap(true);
+    lastLayout->addWidget(lastStatus);
+    heldDetailsSplit->addWidget(lastSection);
     auto *diffSection = new QWidget(heldDetailsSplit);
     auto *diffLayout = new QVBoxLayout(diffSection);
     diffLayout->setContentsMargins(0, 0, 0, 0);
@@ -347,18 +374,68 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         heldDiff->setPlainText(
             jsonDiff(original->toPlainText().toUtf8(), editor->toPlainText().toUtf8()));
     });
+    const auto lastMessageDirty = std::make_shared<bool>(false);
+    const auto refreshLast = [editor, lastEditor, applyLast, lastStatus,
+                              lastMessageDirty](bool force) {
+        if (*lastMessageDirty && !force)
+            return;
+        const auto text = lastMessageText(editor->toPlainText().toUtf8());
+        {
+            const QSignalBlocker blocker(lastEditor);
+            lastEditor->setPlainText(text);
+        }
+        lastEditor->setEnabled(!text.isEmpty());
+        applyLast->setEnabled(!text.isEmpty());
+        lastStatus->setText(text.isEmpty() ? "No last message in the editable JSON." : QString());
+        *lastMessageDirty = false;
+    };
+    connect(lastEditor, &QTextEdit::textChanged, this,
+            [lastMessageDirty] { *lastMessageDirty = true; });
+    connect(editor, &QTextEdit::textChanged, this, [refreshLast] { refreshLast(false); });
+    connect(applyLast, &QPushButton::clicked, this,
+            [editor, lastEditor, lastStatus, lastMessageDirty, refreshLast] {
+                const auto document = QJsonDocument::fromJson(editor->toPlainText().toUtf8());
+                if (!document.isObject()) {
+                    lastStatus->setText("Editable request must be a JSON object.");
+                    return;
+                }
+                auto object = document.object();
+                auto messages = object.value("messages").toArray();
+                if (messages.isEmpty()) {
+                    lastStatus->setText("Editable request has no messages to update.");
+                    return;
+                }
+                QJsonParseError error;
+                const auto wrapped =
+                    QJsonDocument::fromJson("[" + lastEditor->toPlainText().toUtf8() + "]", &error);
+                if (error.error != QJsonParseError::NoError || !wrapped.isArray() ||
+                    wrapped.array().size() != 1) {
+                    lastStatus->setText("Last message must be one valid JSON value.");
+                    return;
+                }
+                messages.replace(messages.size() - 1, wrapped.array().first());
+                object.insert("messages", messages);
+                editor->setPlainText(
+                    QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Indented)));
+                *lastMessageDirty = false;
+                refreshLast(true);
+                lastStatus->setText("Applied to editable JSON. Review it, then forward the edit.");
+            });
     auto *releaseOriginal = new QPushButton("Forward original", heldPage);
     releaseOriginal->setObjectName("forwardOriginalButton");
     heldLayout->addWidget(releaseOriginal);
     auto *releaseEdited = new QPushButton("Validate and forward edit", heldPage);
     releaseEdited->setObjectName("forwardEditedButton");
     heldLayout->addWidget(releaseEdited);
-    const auto showHeld = [heldList, original, editor, releaseOriginal, releaseEdited] {
+    const auto showHeld = [heldList, original, editor, releaseOriginal, releaseEdited, refreshLast,
+                           lastMessageDirty] {
         const auto *item = heldList->currentItem();
         original->setPlainText(item ? readableJson(item->data(Qt::UserRole + 1).toByteArray())
                                     : QString());
         editor->setPlainText(item ? readableJson(item->data(Qt::UserRole + 2).toByteArray())
                                   : QString());
+        *lastMessageDirty = false;
+        refreshLast(true);
         releaseOriginal->setEnabled(item);
         releaseEdited->setEnabled(item);
     };
@@ -369,13 +446,19 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (item && !proxy_.resolveHeld(item->data(Qt::UserRole).toULongLong(), {}, true))
             status_->setText("Request expired or was cancelled.");
     });
-    connect(releaseEdited, &QPushButton::clicked, this, [this, heldList, editor] {
-        const auto *item = heldList->currentItem();
-        if (item && !proxy_.resolveHeld(item->data(Qt::UserRole).toULongLong(),
-                                        editor->toPlainText().toUtf8()))
-            status_->setText("Edit rejected or request expired. Invalid JSON stays held; forward "
-                             "the original to continue.");
-    });
+    connect(releaseEdited, &QPushButton::clicked, this,
+            [this, heldList, editor, lastMessageDirty, lastStatus] {
+                if (*lastMessageDirty) {
+                    lastStatus->setText("Apply the last-message edit before forwarding.");
+                    return;
+                }
+                const auto *item = heldList->currentItem();
+                if (item && !proxy_.resolveHeld(item->data(Qt::UserRole).toULongLong(),
+                                                editor->toPlainText().toUtf8()))
+                    status_->setText(
+                        "Edit rejected or request expired. Invalid JSON stays held; forward "
+                        "the original to continue.");
+            });
     const auto displayedRequest = std::make_shared<quint64>(0);
     const auto showRequest = [this, diff, displayedRequest] {
         const auto *item = requests_->currentItem();
