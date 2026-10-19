@@ -14,11 +14,13 @@
 #include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <atomic>
 #include <deque>
 #include <mutex>
@@ -57,6 +59,50 @@ bool boundedJson(const QJsonValue &value, int depth = 0) {
             if (!boundedJson(child, depth + 1))
                 return false;
     return true;
+}
+bool credentialKey(QString key) {
+    key = key.toLower();
+    key.remove(QRegularExpression("[^a-z0-9]"));
+    return key.contains("authorization") || key.contains("token") || key.contains("apikey") ||
+           key.contains("password") || key.contains("passwd") || key.contains("secret") ||
+           key.contains("credential") || key.contains("cookie") || key == "auth" ||
+           key == "bearer" || key == "jwt" || key.contains("privatekey") ||
+           key.contains("sessionkey") || key.contains("signature");
+}
+bool containsCredentialQuery(const QString &text);
+bool containsCredentialField(const QJsonValue &value, int depth = 0) {
+    if (depth > 32)
+        return true;
+    if (value.isObject()) {
+        const auto object = value.toObject();
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            if (credentialKey(it.key())) {
+                if (!it.value().isString() || it.value().toString() != "[REDACTED]")
+                    return true;
+            } else if (containsCredentialField(it.value(), depth + 1)) {
+                return true;
+            }
+        }
+    }
+    if (value.isArray())
+        for (const auto &entry : value.toArray())
+            if (containsCredentialField(entry, depth + 1))
+                return true;
+    if (value.isString() && containsCredentialQuery(value.toString()))
+        return true;
+    return false;
+}
+bool containsCredentialQuery(const QString &text) {
+    static const QRegularExpression parameter(R"([?&]([^=&#]+)=([^&#]*))");
+    auto matches = parameter.globalMatch(text);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        auto key = QUrl::fromPercentEncoding(match.captured(1).toUtf8());
+        key.replace('+', ' ');
+        if (credentialKey(key) && !match.captured(2).isEmpty() && match.captured(2) != "[REDACTED]")
+            return true;
+    }
+    return false;
 }
 bool validEdit(const QByteArray &body, const QString &path, std::size_t maximum) {
     if (body.size() > static_cast<qsizetype>(maximum))
@@ -489,13 +535,14 @@ class Engine : public QAbstractHttpServer {
                 const auto json = QJsonDocument::fromJson(body, &error);
                 if (error.error == QJsonParseError::NoError && json.isObject()) {
                     const std::lock_guard lock(mutex);
+                    // QByteArray copies share storage until changed, so count only unique payloads.
                     const auto recordBytes = static_cast<std::size_t>(
                         body.size() + (sendBody != body ? sendBody.size() : 0));
-                    if (recordBytes > 8 * 1024 * 1024)
+                    if (recordBytes > options.maxHistoryBytes)
                         return;
                     while (!observations.empty() &&
                            (observations.size() >= options.maxHistory ||
-                            retainedBytes + recordBytes > 8 * 1024 * 1024)) {
+                            retainedBytes + recordBytes > options.maxHistoryBytes)) {
                         retainedBytes -=
                             static_cast<std::size_t>(observations.front().body.size() +
                                                      (observations.front().modified
@@ -620,7 +667,8 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         options.listenAddress != "127.0.0.1" || options.listenPort < 0 ||
         options.listenPort > 65535 || options.timeoutMs < 1 || options.maxBodyBytes < 1 ||
         options.maxBodyBytes > 16 * 1024 * 1024 || options.maxHistory < 1 ||
-        options.maxHistory > 1000)
+        options.maxHistory > 1000 || options.maxHistoryBytes < 1 ||
+        options.maxHistoryBytes > 256 * 1024 * 1024 || !replayHistory_.empty())
         return false;
     QHostAddress address;
     if (!address.setAddress(config.serverIp) ||
@@ -668,9 +716,52 @@ quint16 ProxyServer::listenPort() const { return impl_ ? impl_->port : 0; }
 std::vector<ObservedRequest> ProxyServer::history() const {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!impl_)
-        return {};
+        return replayHistory_;
     const std::lock_guard lock(impl_->engine->mutex);
     return {impl_->engine->observations.begin(), impl_->engine->observations.end()};
+}
+bool ProxyServer::loadOfflineReplay(const std::vector<ObservedRequest> &records) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    constexpr std::size_t maxReplayRecords = 1000;
+    constexpr std::size_t maxReplayBytes = 64 * 1024 * 1024;
+    if (impl_ || records.size() > maxReplayRecords)
+        return false;
+    std::size_t bytes = 0;
+    for (const auto &record : records) {
+        if (record.method.isEmpty() || record.method.size() > 32 || record.path.size() > 4096 ||
+            containsCredentialQuery(record.path) || record.audit.size() > 64 || record.status < 0 ||
+            record.status > 999 || record.body.size() > 16 * 1024 * 1024 ||
+            record.originalBody.size() > 16 * 1024 * 1024 ||
+            record.modifiedBody.size() > 16 * 1024 * 1024)
+            return false;
+        const auto bodyHasCredentials = [](const QByteArray &body) {
+            if (body.isEmpty())
+                return false;
+            QJsonParseError error;
+            const auto document = QJsonDocument::fromJson(body, &error);
+            return error.error != QJsonParseError::NoError || !document.isObject() ||
+                   containsCredentialField(document.object());
+        };
+        if (bodyHasCredentials(record.body) || bodyHasCredentials(record.originalBody) ||
+            bodyHasCredentials(record.modifiedBody))
+            return false;
+        for (const auto &entry : record.audit)
+            if (entry.size() > 4096 || containsCredentialQuery(entry))
+                return false;
+        bytes += static_cast<std::size_t>(record.body.size() + record.originalBody.size() +
+                                          record.modifiedBody.size());
+        if (bytes > maxReplayBytes)
+            return false;
+    }
+    replayHistory_ = records;
+    for (auto &record : replayHistory_)
+        record.audit.clear();
+    return true;
+}
+void ProxyServer::clearOfflineReplay() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!impl_)
+        replayHistory_.clear();
 }
 bool ProxyServer::setModificationOptions(const ModificationOptions &options) {
     Q_ASSERT(QThread::currentThread() == thread());

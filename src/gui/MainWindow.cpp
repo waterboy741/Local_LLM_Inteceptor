@@ -1,7 +1,10 @@
 #include "MainWindow.hpp"
+#include "inspection/InspectionArchive.hpp"
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QFile>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -15,6 +18,7 @@
 #include <QMessageBox>
 #include <QNetworkInterface>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
@@ -181,6 +185,18 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     listenPort_->setSpecialValueText("Automatic");
     form->addRow("Local listen port (127.0.0.1)", listenPort_);
     form->addRow("API paths (comma separated)", paths_);
+    auto *historyLimit = new QSpinBox(panel);
+    historyLimit->setObjectName("historyRecordLimitInput");
+    historyLimit->setRange(1, 1000);
+    historyLimit->setValue(100);
+    historyLimit->setSuffix(" requests");
+    form->addRow("Retained request count", historyLimit);
+    auto *historyMemory = new QSpinBox(panel);
+    historyMemory->setObjectName("historyMemoryLimitInput");
+    historyMemory->setRange(1, 256);
+    historyMemory->setValue(8);
+    historyMemory->setSuffix(" MiB");
+    form->addRow("Retained body memory", historyMemory);
     layout->addLayout(form);
     auto *prepare = new QPushButton("Prepare configuration", panel);
     prepare->setObjectName("prepareButton");
@@ -205,6 +221,20 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     requests_ = new QListWidget(requestPage);
     requests_->setObjectName("observedRequests");
     requestLayout->addWidget(requests_);
+    auto *archiveRow = new QHBoxLayout;
+    auto *exportArchive = new QPushButton("Export sanitized archive", requestPage);
+    exportArchive->setObjectName("exportArchiveButton");
+    auto *importArchive = new QPushButton("Import offline replay", requestPage);
+    importArchive->setObjectName("importReplayButton");
+    auto *clearReplay = new QPushButton("Clear replay", requestPage);
+    clearReplay->setObjectName("clearReplayButton");
+    archiveRow->addWidget(exportArchive);
+    archiveRow->addWidget(importArchive);
+    archiveRow->addWidget(clearReplay);
+    requestLayout->addLayout(archiveRow);
+    auto *summary = new QLabel("No retained requests", requestPage);
+    summary->setObjectName("inspectionSummary");
+    requestLayout->addWidget(summary);
     auto *requestDetailsSplit = new QSplitter(Qt::Vertical, requestPage);
     requestLayout->addWidget(requestDetailsSplit);
     auto *fullJsonSection = new QWidget(requestDetailsSplit);
@@ -565,7 +595,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     };
     auto *poll = new QTimer(this);
     poll->setInterval(250);
-    connect(poll, &QTimer::timeout, this, [this, heldList, showHeld, showRequest] {
+    connect(poll, &QTimer::timeout, this, [this, heldList, showHeld, showRequest, summary] {
         const auto pending = proxy_.held();
         const auto selectedHeld =
             heldList->currentItem() ? heldList->currentItem()->data(Qt::UserRole).toULongLong() : 0;
@@ -590,6 +620,20 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                 showHeld();
         }
         const auto history = proxy_.history();
+        const auto totals = summarizeRequests(history);
+        if (!history.empty()) {
+            summary->setText(
+                proxy_.listenPort() == 0
+                    ? QString("Offline replay: %1 requests, %2 modified, %3 body bytes. "
+                              "Replay cannot contact a server.")
+                          .arg(totals.count)
+                          .arg(totals.modifiedCount)
+                          .arg(totals.totalBodyBytes)
+                    : QString("Retained %1 requests (%2 modified), %3 body bytes")
+                          .arg(totals.count)
+                          .arg(totals.modifiedCount)
+                          .arg(totals.totalBodyBytes));
+        }
         const auto selected = requests_->currentItem()
                                   ? requests_->currentItem()->data(Qt::UserRole).toULongLong()
                                   : 0;
@@ -629,35 +673,103 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     poll->start();
     connect(requests_, &QListWidget::currentItemChanged, this,
             [showRequest](QListWidgetItem *, QListWidgetItem *) { showRequest(); });
-    connect(startProxy, &QPushButton::clicked, this, [this, startProxy, applySettings] {
-        if (!applySettings())
+    connect(exportArchive, &QPushButton::clicked, this, [this, summary] {
+        const auto fileName = QFileDialog::getSaveFileName(
+            this, "Export sanitized request archive", "requests.jsonl", "JSON Lines (*.jsonl)");
+        if (fileName.isEmpty())
             return;
-        const auto config = controller_->config();
-        if (!config)
+        QSaveFile file(fileName);
+        QString error;
+        if (!file.open(QIODevice::WriteOnly) || !exportRequests(file, proxy_.history(), &error) ||
+            !file.commit()) {
+            QMessageBox::warning(this, "Archive export failed",
+                                 error.isEmpty() ? file.errorString() : error);
             return;
-        ProxyOptions options;
-        options.listenPort = listenPort_->value();
-        // A first Ollama request may load the model before sending response headers.
-        options.timeoutMs = 120000;
-        if (proxy_.start(*config, options)) {
-            status_->setText(QString("Local proxy listening at http://127.0.0.1:%1 — set the "
-                                     "client Ollama base URL here")
-                                 .arg(proxy_.listenPort()));
-            startProxy->setEnabled(false);
-            listenPort_->setEnabled(false);
-        } else
-            status_->setText(
-                "Could not start the local proxy. Check the selected endpoint and listener port.");
+        }
+        summary->setText("Sanitized archive exported.");
     });
+    connect(importArchive, &QPushButton::clicked, this, [this, summary] {
+        if (proxy_.listenPort() != 0) {
+            QMessageBox::information(this, "Replay unavailable",
+                                     "Stop the live proxy before importing an offline replay.");
+            return;
+        }
+        const auto fileName = QFileDialog::getOpenFileName(
+            this, "Import offline request archive", {}, "JSON Lines (*.jsonl);;All files (*)");
+        if (fileName.isEmpty())
+            return;
+        QFile file(fileName);
+        if (!file.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(this, "Archive import failed", file.errorString());
+            return;
+        }
+        std::vector<ObservedRequest> records;
+        QString error;
+        if (!importRequests(file, records, &error, 1000, 16 * 1024 * 1024) ||
+            !proxy_.loadOfflineReplay(records)) {
+            QMessageBox::warning(this, "Archive import failed",
+                                 error.isEmpty()
+                                     ? "Replay exceeds the 1000-record or 16 MiB archive limit."
+                                     : error);
+            return;
+        }
+        const auto totals = summarizeRequests(records);
+        summary->setText(QString("Offline replay: %1 requests, %2 modified, %3 body bytes. "
+                                 "Replay cannot contact a server.")
+                             .arg(totals.count)
+                             .arg(totals.modifiedCount)
+                             .arg(totals.totalBodyBytes));
+    });
+    connect(clearReplay, &QPushButton::clicked, this, [this, summary, displayedRequest] {
+        if (proxy_.listenPort() != 0) {
+            summary->setText("Stop the proxy before clearing request history.");
+            return;
+        }
+        proxy_.clearOfflineReplay();
+        requests_->clear();
+        details_->clear();
+        messageItems_->clear();
+        messageDetails_->clear();
+        *displayedRequest = 0;
+        summary->setText("Replay cleared.");
+    });
+    connect(startProxy, &QPushButton::clicked, this,
+            [this, startProxy, applySettings, historyLimit, historyMemory] {
+                if (!applySettings())
+                    return;
+                const auto config = controller_->config();
+                if (!config)
+                    return;
+                ProxyOptions options;
+                options.listenPort = listenPort_->value();
+                options.maxHistory = static_cast<std::size_t>(historyLimit->value());
+                options.maxHistoryBytes =
+                    static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
+                // A first Ollama request may load the model before sending response headers.
+                options.timeoutMs = 120000;
+                if (proxy_.start(*config, options)) {
+                    status_->setText(
+                        QString("Local proxy listening at http://127.0.0.1:%1 — set the "
+                                "client Ollama base URL here")
+                            .arg(proxy_.listenPort()));
+                    startProxy->setEnabled(false);
+                    listenPort_->setEnabled(false);
+                } else
+                    status_->setText(
+                        "Could not start the local proxy. Clear any loaded replay, then check "
+                        "the selected endpoint and listener port.");
+            });
     connect(controller_, &SessionController::stateChanged, this,
-            [this, startProxy, displayedRequest](SessionController::State state) {
+            [this, startProxy, displayedRequest, summary](SessionController::State state) {
                 if (state == SessionController::State::Stopping) {
                     proxy_.stop();
+                    proxy_.clearOfflineReplay();
                     *displayedRequest = 0;
                     requests_->clear();
                     details_->clear();
                     messageItems_->clear();
                     messageDetails_->clear();
+                    summary->setText("No retained requests");
                 }
                 startProxy->setEnabled(state == SessionController::State::Ready);
                 listenPort_->setEnabled(state == SessionController::State::Idle);

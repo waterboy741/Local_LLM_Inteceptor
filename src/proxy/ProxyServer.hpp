@@ -12,6 +12,7 @@ struct ProxyOptions {
     int timeoutMs = 2000;
     std::size_t maxBodyBytes = 1048576;
     std::size_t maxHistory = 100;
+    std::size_t maxHistoryBytes = 8 * 1024 * 1024;
 };
 enum class InterceptionMode { Observe, Modify };
 enum class AutomaticOperation { None, ReplaceLastMessage, AppendToLastContent, ReplaceMessages };
@@ -58,10 +59,13 @@ class ProxyServer : public QObject {
     bool setModificationOptions(const ModificationOptions &);
     std::vector<HeldRequest> held() const;
     bool resolveHeld(quint64 id, const QByteArray &editedBody, bool useOriginal = false);
+    bool loadOfflineReplay(const std::vector<ObservedRequest> &records);
+    void clearOfflineReplay();
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     ModificationOptions modification_;
+    std::vector<ObservedRequest> replayHistory_;
 };
 } // namespace interceptor

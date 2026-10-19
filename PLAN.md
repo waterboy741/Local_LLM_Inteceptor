@@ -1,6 +1,6 @@
 # llm_interceptor — Development Plan
 
-Status: Revised October 12, 2026. M0 through M4 are complete under their offline acceptance criteria, each with implementation, testing, and independent review COMPLETE votes. M5 is next; live lab validation is deferred to M6.
+Status: Revised October 18, 2026. M0 through M5 are complete under their offline acceptance criteria. M6 live lab validation remains deferred until the lab is available.
 
 ## Purpose
 
@@ -171,6 +171,8 @@ Acceptance:
 ### M5 — Research Usability and Hardening
 
 Add sanitized request export/import, bounded retention settings, session summaries, and reproducible offline replay into the inspection pipeline. Packet recording and CSV export mentioned in repository guidelines are secondary features; implement them after the core interceptor works, with explicit recording controls and bounded storage.
+
+Completed October 18, 2026 under offline acceptance criteria. Production, testing, and independent review each returned COMPLETE after fixes. Socket-enabled debug, release, and sanitizer suites passed 7/7. The 300-request GUI load test and bounded-retention cases ran with synthetic loopback traffic. A local unsigned app package and M6 runbook are prepared; see [M5 inspection behavior](docs/M5_INSPECTION.md) and [package and lab runbook](docs/M5_PACKAGE_AND_LAB.md). No live lab validation or automatic redirection is claimed.
 
 Acceptance:
 - Long-running synthetic load stays within configured memory/storage limits and leaves the UI responsive.
