@@ -87,6 +87,11 @@ bool validEdit(const QByteArray &body, const QString &path, std::size_t maximum)
     }
     return true;
 }
+bool validAutomaticMessage(const QJsonValue &value) {
+    if (!value.isObject() || !boundedJson(value))
+        return false;
+    return QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact).size() <= 65536;
+}
 bool replaceField(QJsonObject &object, const QStringList &path, int depth,
                   const QJsonValue &value) {
     const auto key = path[depth];
@@ -110,6 +115,16 @@ bool validModification(const ModificationOptions &options) {
     if (options.holdTimeoutMs < 1 || options.holdTimeoutMs > 300000 || options.maxHeld < 1 ||
         options.maxHeld > 8 || options.maxEditableBytes < 1 || options.maxEditableBytes > 1048576 ||
         options.maxHeld * options.maxEditableBytes > 8 * 1048576 || options.rules.size() > 32)
+        return false;
+    if (static_cast<int>(options.automaticOperation) < static_cast<int>(AutomaticOperation::None) ||
+        static_cast<int>(options.automaticOperation) >
+            static_cast<int>(AutomaticOperation::ReplaceMessages))
+        return false;
+    if ((options.automaticOperation == AutomaticOperation::ReplaceLastMessage ||
+         options.automaticOperation == AutomaticOperation::ReplaceMessages) &&
+        !validAutomaticMessage(options.automaticMessage))
+        return false;
+    if (options.automaticAppendText.toUtf8().size() > 65536)
         return false;
     QSet<QString> ids;
     for (const auto &rule : options.rules) {
@@ -342,6 +357,47 @@ class Engine : public QAbstractHttpServer {
             validEdit(sendBody, incomingPath, modification.maxEditableBytes)) {
             auto object = QJsonDocument::fromJson(sendBody).object();
             bool changed = false;
+            if (incomingPath == "/api/chat" || incomingPath == "/v1/chat/completions") {
+                auto messages = object.value("messages").toArray();
+                switch (modification.automaticOperation) {
+                case AutomaticOperation::ReplaceLastMessage:
+                    if (!messages.isEmpty() && messages.last() != modification.automaticMessage) {
+                        messages.replace(messages.size() - 1, modification.automaticMessage);
+                        object.insert("messages", messages);
+                        changed = true;
+                        audit.append("automatic: replace final message");
+                    }
+                    break;
+                case AutomaticOperation::AppendToLastContent:
+                    if (!messages.isEmpty() && !modification.automaticAppendText.isEmpty()) {
+                        const auto lastValue = messages.last();
+                        if (lastValue.isObject() &&
+                            lastValue.toObject().value("content").isString()) {
+                            auto message = lastValue.toObject();
+                            const auto content = message.value("content").toString();
+                            message.insert("content", content + modification.automaticAppendText);
+                            if (message != lastValue.toObject()) {
+                                messages.replace(messages.size() - 1, message);
+                                object.insert("messages", messages);
+                                changed = true;
+                                audit.append("automatic: append to final content");
+                            }
+                        }
+                    }
+                    break;
+                case AutomaticOperation::ReplaceMessages: {
+                    const QJsonArray replacement{modification.automaticMessage};
+                    if (object.value("messages").isArray() && messages != replacement) {
+                        object.insert("messages", replacement);
+                        changed = true;
+                        audit.append("automatic: replace all messages");
+                    }
+                    break;
+                }
+                case AutomaticOperation::None:
+                    break;
+                }
+            }
             for (const auto &rule : modification.rules)
                 if (rule.path == incomingPath &&
                     (rule.model.isEmpty() || object.value("model").toString() == rule.model)) {

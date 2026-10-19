@@ -1,6 +1,7 @@
 #include "MockOllama.hpp"
 #include "proxy/ProxyServer.hpp"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QtTest>
@@ -37,6 +38,13 @@ class M3ModificationTests : public QObject {
         return {id, "/api/generate", "", {"prompt"}, replacement};
     }
 
+    static ModificationOptions automatic(AutomaticOperation operation) {
+        ModificationOptions options;
+        options.mode = InterceptionMode::Modify;
+        options.automaticOperation = operation;
+        return options;
+    }
+
   private slots:
     void observeNeverModifiesEvenWithRules() {
         MockOllama mock;
@@ -55,6 +63,284 @@ class M3ModificationTests : public QObject {
         QTRY_COMPARE(proxy.history().size(), std::size_t(1));
         QVERIFY(!proxy.history().front().modified);
         QVERIFY(proxy.held().empty());
+    }
+
+    void automaticReplaceLastMessagePreservesEarlierMessagesAndFields() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::ReplaceLastMessage);
+        options.automaticMessage = QJsonObject{{"role", "assistant"}, {"content", "replacement"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"system\",\"content\":\"policy\"},"
+            "{\"role\":\"user\",\"content\":\"question\"}],\"temperature\":0.4,\"extra\":true}";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        auto expected = QJsonDocument::fromJson(original).object();
+        auto messages = expected["messages"].toArray();
+        messages[messages.size() - 1] =
+            QJsonObject{{"role", "assistant"}, {"content", "replacement"}};
+        expected["messages"] = messages;
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(proxy.history().front().modified);
+    }
+
+    void automaticReplaceLastAcceptsDeveloperRoleOnOpenAiPath() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::ReplaceLastMessage);
+        options.automaticMessage =
+            QJsonObject{{"role", "developer"}, {"content", "OpenCode policy"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"question\"}]}";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        auto expected = QJsonDocument::fromJson(original).object();
+        expected["messages"] =
+            QJsonArray{QJsonObject{{"role", "developer"}, {"content", "OpenCode policy"}}};
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(proxy.history().front().modified);
+    }
+
+    void unsupportedReplacementRoleFallsBackOnOllamaChatPath() {
+        MockOllama mock;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(configFor(mock)));
+        auto options = automatic(AutomaticOperation::ReplaceLastMessage);
+        options.automaticMessage =
+            QJsonObject{{"role", "developer"}, {"content", "unsupported here"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original = " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\","
+                                    "\"content\":\"keep this request\"}] } ";
+        client.write(request(original, "/api/chat"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), original);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(!proxy.history().front().modified);
+    }
+
+    void automaticAppendToLastContent() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::AppendToLastContent);
+        options.automaticAppendText = QString::fromUtf8(" + café 🤖");
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"system\",\"content\":\"keep\"},"
+            "{\"role\":\"user\",\"content\":\"hello\",\"name\":\"Ada\"}],\"stream\":false}";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        auto expected = QJsonDocument::fromJson(original).object();
+        auto messages = expected["messages"].toArray();
+        auto last = messages.last().toObject();
+        last["content"] = QString::fromUtf8("hello + café 🤖");
+        messages[messages.size() - 1] = last;
+        expected["messages"] = messages;
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
+    }
+
+    void automaticAppendLeavesNonStringContentByteIdentical() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::AppendToLastContent);
+        options.automaticAppendText = "suffix";
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\",\"content\":[\"part\","
+            "{\"image_url\":\"data\"}]}] } ";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), original);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(!proxy.history().front().modified);
+    }
+
+    void automaticReplaceMessagesWithOneObject() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::ReplaceMessages);
+        options.automaticMessage = QJsonObject{{"role", "user"}, {"content", "single"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"system\",\"content\":\"discard\"},"
+            "{\"role\":\"user\",\"content\":\"also discard\"}],\"temperature\":0.3}";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        auto expected = QJsonDocument::fromJson(original).object();
+        expected["messages"] = QJsonArray{QJsonObject{{"role", "user"}, {"content", "single"}}};
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
+    }
+
+    void automaticReplaceMessagesPopulatesEmptyArray() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::ReplaceMessages);
+        options.automaticMessage = QJsonObject{{"role", "user"}, {"content", "single"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            " { \"model\":\"fixture\", \"messages\":[], \"temperature\":0.3 } ";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        auto expected = QJsonDocument::fromJson(original).object();
+        expected["messages"] = QJsonArray{QJsonObject{{"role", "user"}, {"content", "single"}}};
+        QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(proxy.history().front().modified);
+    }
+
+    void automaticReplaceMessagesLeavesMissingOrNonArrayValueUnchanged() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = automatic(AutomaticOperation::ReplaceMessages);
+        options.automaticMessage = QJsonObject{{"role", "user"}, {"content", "single"}};
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QList<QByteArray> originals = {
+            " { \"model\":\"fixture\", \"temperature\":0.3 } ",
+            " { \"model\":\"fixture\", \"messages\":{\"unexpected\":true} } "};
+        for (const auto &original : originals) {
+            client.write(request(original, "/v1/chat/completions"));
+            const auto expectedCount = mock.bodies.size() + 1;
+            QTRY_COMPARE(mock.bodies.size(), expectedCount);
+            QCOMPARE(mock.bodies.back(), original);
+        }
+        QCOMPARE(proxy.history().size(), std::size_t(originals.size()));
+        for (const auto &record : proxy.history())
+            QVERIFY(!record.modified);
+    }
+
+    void automaticNoOpAndObserveForwardIncomingBytesUnchanged() {
+        for (const auto mode : {InterceptionMode::Modify, InterceptionMode::Observe}) {
+            MockOllama mock;
+            ProxyServer proxy;
+            auto config = configFor(mock);
+            config.apiPaths = {"/v1/chat/completions"};
+            QVERIFY(proxy.start(config));
+            auto options = automatic(AutomaticOperation::AppendToLastContent);
+            options.mode = mode;
+            options.automaticAppendText = "suffix";
+            QVERIFY(proxy.setModificationOptions(options));
+            QTcpSocket client;
+            connectClient(client, proxy);
+            QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+            const QList<QByteArray> originals = {
+                " { \"model\":\"fixture\" } ", " { \"model\":\"fixture\", \"messages\":[] } ",
+                " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\",\"content\":12}] } "};
+            for (const auto &original : originals) {
+                client.write(request(original, "/v1/chat/completions"));
+                const int count = int(mock.bodies.size()) + 1;
+                QTRY_COMPARE(mock.bodies.size(), count);
+                QCOMPARE(mock.bodies.back(), original);
+            }
+            const QByteArray withMessage =
+                " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}] "
+                "} ";
+            client.write(request(withMessage, "/v1/chat/completions"));
+            const int afterValid = int(mock.bodies.size()) + 1;
+            QTRY_COMPARE(mock.bodies.size(), afterValid);
+            if (mode == InterceptionMode::Modify) {
+                auto expected = QJsonDocument::fromJson(withMessage).object();
+                auto messages = expected["messages"].toArray();
+                auto last = messages.last().toObject();
+                last["content"] = "hisuffix";
+                messages[messages.size() - 1] = last;
+                expected["messages"] = messages;
+                QCOMPARE(QJsonDocument::fromJson(mock.bodies.back()).object(), expected);
+            } else {
+                QCOMPARE(mock.bodies.back(), withMessage);
+            }
+            options.automaticAppendText.clear();
+            QVERIFY(proxy.setModificationOptions(options));
+            const QByteArray emptySuffix =
+                " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}] "
+                "} ";
+            client.write(request(emptySuffix, "/v1/chat/completions"));
+            const int afterEmptySuffix = int(mock.bodies.size()) + 1;
+            QTRY_COMPARE(mock.bodies.size(), afterEmptySuffix);
+            QCOMPARE(mock.bodies.back(), emptySuffix);
+            QVERIFY(proxy.history().size() >= std::size_t(originals.size()));
+            QVERIFY(!proxy.history().back().modified);
+        }
+    }
+
+    void automaticOperationCanBeReviewedInManualHoldAndOriginalForwarded() {
+        MockOllama mock;
+        ProxyServer proxy;
+        auto config = configFor(mock);
+        config.apiPaths = {"/v1/chat/completions"};
+        QVERIFY(proxy.start(config));
+        auto options = holding();
+        options.automaticOperation = AutomaticOperation::AppendToLastContent;
+        options.automaticAppendText = " reviewed";
+        QVERIFY(proxy.setModificationOptions(options));
+        QTcpSocket client;
+        connectClient(client, proxy);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray original =
+            " { \"model\":\"fixture\", \"messages\":[{\"role\":\"user\",\"content\":\"hello\"}] } ";
+        client.write(request(original, "/v1/chat/completions"));
+        QTRY_COMPARE(proxy.held().size(), std::size_t(1));
+        const auto pending = proxy.held().front();
+        QVERIFY(pending.proposedBody != original);
+        QCOMPARE(QJsonDocument::fromJson(pending.proposedBody)
+                     .object()["messages"]
+                     .toArray()
+                     .last()
+                     .toObject()["content"]
+                     .toString(),
+                 QString("hello reviewed"));
+        QVERIFY(proxy.resolveHeld(pending.id, {}, true));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), original);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        QVERIFY(!proxy.history().front().modified);
     }
 
     void orderedNestedRulesPreserveUnicodeAndUnknownFields() {

@@ -257,10 +257,37 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     holdSeconds->setSuffix(" seconds");
     holdSeconds->setObjectName("holdDeadlineSecondsInput");
     settingsLayout->addWidget(holdSeconds);
+    auto *automaticOperation = new QComboBox(settingsPage);
+    automaticOperation->addItems({"None", "Replace final messages item",
+                                  "Append to final message content", "Replace all messages"});
+    automaticOperation->setObjectName("automaticOperationInput");
+    settingsLayout->addWidget(new QLabel("Automatic operation", settingsPage));
+    settingsLayout->addWidget(automaticOperation);
+    auto *automaticMessage = new QTextEdit(settingsPage);
+    automaticMessage->setObjectName("automaticMessageInput");
+    automaticMessage->setPlaceholderText("{\"role\":\"user\",\"content\":\"Synthetic message\"}");
+    automaticMessage->setMaximumHeight(100);
+    settingsLayout->addWidget(new QLabel("Replacement message JSON", settingsPage));
+    settingsLayout->addWidget(automaticMessage);
+    auto *automaticAppendText = new QLineEdit(settingsPage);
+    automaticAppendText->setObjectName("automaticAppendTextInput");
+    automaticAppendText->setPlaceholderText("Text to append to final message content");
+    settingsLayout->addWidget(new QLabel("Text to append", settingsPage));
+    settingsLayout->addWidget(automaticAppendText);
+    const auto updateAutomaticEditors = [automaticOperation, automaticMessage,
+                                         automaticAppendText] {
+        const auto operation = automaticOperation->currentIndex();
+        automaticMessage->setEnabled(operation == 1 || operation == 3);
+        automaticAppendText->setEnabled(operation == 2);
+    };
+    connect(automaticOperation, &QComboBox::currentIndexChanged, this,
+            [updateAutomaticEditors](int) { updateAutomaticEditors(); });
+    updateAutomaticEditors();
     settingsLayout->addWidget(
         new QLabel("Timeout forwards original bytes. Observe releases held originals. Stop cancels "
                    "held requests.\nRules replace existing object fields in order; missing fields "
-                   "remain unchanged.",
+                   "remain unchanged. Automatic chat edits run before rules and do nothing when "
+                   "the selected operation has no applicable message.",
                    settingsPage));
     auto *rules = new QTextEdit(settingsPage);
     rules->setPlainText("[]");
@@ -274,7 +301,8 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     settingsLayout->addWidget(applyMode);
     auto *modeStatus = new QLabel("Active mode: Observe", settingsPage);
     settingsLayout->addWidget(modeStatus);
-    const auto applySettings = [this, mode, holdMatching, holdSeconds, rules, modeStatus] {
+    const auto applySettings = [this, mode, holdMatching, holdSeconds, rules, modeStatus,
+                                automaticOperation, automaticMessage, automaticAppendText] {
         const auto ruleBytes = rules->toPlainText().toUtf8();
         if (ruleBytes.size() > 2 * 1048576) {
             modeStatus->setText("Rule configuration exceeds 2 MiB; settings were not applied.");
@@ -290,6 +318,23 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
             mode->currentIndex() == 0 ? InterceptionMode::Observe : InterceptionMode::Modify;
         options.holdMatching = holdMatching->isChecked();
         options.holdTimeoutMs = holdSeconds->value() * 1000;
+        options.automaticOperation =
+            options.mode == InterceptionMode::Modify
+                ? static_cast<AutomaticOperation>(automaticOperation->currentIndex())
+                : AutomaticOperation::None;
+        if (options.automaticOperation == AutomaticOperation::ReplaceLastMessage ||
+            options.automaticOperation == AutomaticOperation::ReplaceMessages) {
+            const auto messageDocument =
+                QJsonDocument::fromJson(automaticMessage->toPlainText().toUtf8());
+            if (!messageDocument.isObject()) {
+                modeStatus->setText("Automatic message must be a JSON object; settings were not "
+                                    "applied.");
+                return false;
+            }
+            options.automaticMessage = messageDocument.object();
+        }
+        if (options.automaticOperation == AutomaticOperation::AppendToLastContent)
+            options.automaticAppendText = automaticAppendText->text();
         for (const auto &value : document.array()) {
             if (!value.isObject()) {
                 modeStatus->setText("Each rule must be an object.");
@@ -318,8 +363,12 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                                 "Observe to forward originals.");
             return false;
         }
-        modeStatus->setText(mode->currentIndex() == 0 ? "Active mode: Observe — no edits"
-                                                      : "Active mode: Modify");
+        const auto automaticLabel = automaticOperation->currentText();
+        modeStatus->setText(mode->currentIndex() == 0
+                                ? "Active mode: Observe — no edits"
+                                : (automaticOperation->currentIndex() == 0
+                                       ? "Active mode: Modify"
+                                       : "Active mode: Modify — automatic: " + automaticLabel));
         return true;
     };
     connect(applyMode, &QPushButton::clicked, this, [applySettings] { applySettings(); });

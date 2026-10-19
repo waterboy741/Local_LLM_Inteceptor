@@ -584,6 +584,8 @@ class M1FoundationTests : public QObject {
         SessionController controller;
         MainWindow window(&controller);
         auto *mode = window.findChild<QComboBox *>("interceptionModeInput");
+        auto *automaticOperation = window.findChild<QComboBox *>("automaticOperationInput");
+        auto *automaticMessage = window.findChild<QTextEdit *>("automaticMessageInput");
         auto *hold = window.findChild<QCheckBox *>("holdMatchingInput");
         auto *rules = window.findChild<QTextEdit *>("rulesInput");
         auto *apply = window.findChild<QPushButton *>("applyModificationOptionsButton");
@@ -597,8 +599,9 @@ class M1FoundationTests : public QObject {
         auto *forward = window.findChild<QPushButton *>("forwardEditedButton");
         auto *history = window.findChild<QListWidget *>("observedRequests");
         auto *diff = window.findChild<QTextEdit *>("modificationDiff");
-        QVERIFY(mode && hold && rules && apply && start && listenPort && status && held &&
-                originalView && editor && lastEditor && forward && history && diff);
+        QVERIFY(mode && automaticOperation && automaticMessage && hold && rules && apply && start &&
+                listenPort && status && held && originalView && editor && lastEditor && forward &&
+                history && diff);
         QCOMPARE(mode->currentIndex(), 0);
         mode->setCurrentIndex(1);
         hold->setChecked(true);
@@ -670,6 +673,8 @@ class M1FoundationTests : public QObject {
         client.write(request());
         QTRY_COMPARE(held->count(), 1);
         QCOMPARE(mock.bodies.size(), 2);
+        automaticOperation->setCurrentIndex(1);
+        automaticMessage->setPlainText("{");
         mode->setCurrentIndex(0);
         apply->click();
         QTRY_COMPARE(mock.bodies.size(), 3);
@@ -750,6 +755,59 @@ class M1FoundationTests : public QObject {
         forward->click();
         QTRY_COMPARE(mock.bodies.size(), 1);
         QCOMPARE(mock.bodies.front(), sentBody);
+        QVERIFY(window.close());
+    }
+
+    void automaticMessageControlsConfigureChatCompletionEditing() {
+        MockOllama mock;
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *mode = window.findChild<QComboBox *>("interceptionModeInput");
+        auto *operation = window.findChild<QComboBox *>("automaticOperationInput");
+        auto *message = window.findChild<QTextEdit *>("automaticMessageInput");
+        auto *append = window.findChild<QLineEdit *>("automaticAppendTextInput");
+        auto *apply = window.findChild<QPushButton *>("applyModificationOptionsButton");
+        auto *tabs = window.findChild<QTabWidget *>();
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        QVERIFY(mode && operation && message && append && apply && tabs && start && listenPort &&
+                status);
+        window.show();
+        tabs->setCurrentIndex(2);
+        QTRY_VERIFY(window.isVisible());
+        QTRY_VERIFY(apply->isVisible());
+        QVERIFY(tabs->currentWidget()->rect().contains(apply->geometry()));
+        QCOMPARE(operation->count(), 4);
+        QCOMPARE(operation->currentIndex(), 0);
+        mode->setCurrentIndex(1);
+        operation->setCurrentIndex(2);
+        append->setText(" [automatic]");
+        apply->click();
+        tabs->setCurrentIndex(0);
+        listenPort->setValue(0);
+        auto config = validConfig();
+        config.serverIp = "127.0.0.1";
+        config.serverPort = mock.serverPort();
+        config.apiPaths = {"/v1/chat/completions"};
+        config.explicitProxy = true;
+        QVERIFY(controller.prepare(config));
+        start->click();
+        const auto endpoint =
+            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body =
+            R"({"model":"fixture","messages":[{"role":"user","content":"hello"}]})";
+        client.write("POST /v1/chat/completions HTTP/1.1\r\nHost: synthetic\r\n"
+                     "Content-Type: application/json\r\nContent-Length: " +
+                     QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        const auto sent = QJsonDocument::fromJson(mock.bodies.front()).object();
+        QCOMPARE(sent["messages"].toArray().at(0).toObject()["content"].toString(),
+                 QString("hello [automatic]"));
         QVERIFY(window.close());
     }
 };

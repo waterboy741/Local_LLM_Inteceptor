@@ -14,6 +14,7 @@ struct ProxyOptions {
     std::size_t maxHistory = 100;
 };
 enum class InterceptionMode { Observe, Modify };
+enum class AutomaticOperation { None, ReplaceLastMessage, AppendToLastContent, ReplaceMessages };
 struct JsonRule {
     QString id, path, model;
     QStringList fieldPath;
@@ -21,6 +22,9 @@ struct JsonRule {
 };
 struct ModificationOptions {
     InterceptionMode mode = InterceptionMode::Observe;
+    AutomaticOperation automaticOperation = AutomaticOperation::None;
+    QJsonValue automaticMessage;
+    QString automaticAppendText;
     bool holdMatching = false;
     int holdTimeoutMs = 30000;
     std::size_t maxHeld = 8, maxEditableBytes = 1048576;
