@@ -56,6 +56,12 @@ QString readableJson(const QByteArray &raw) {
     const auto document = QJsonDocument::fromJson(raw);
     return QString::fromUtf8(document.isNull() ? raw : document.toJson(QJsonDocument::Indented));
 }
+QString unwrapJsonArrayItem(QString wrapped) {
+    wrapped = wrapped.trimmed();
+    return wrapped.size() >= 2 && wrapped.front() == '[' && wrapped.back() == ']'
+               ? wrapped.mid(1, wrapped.size() - 2).trimmed()
+               : QString();
+}
 QString lastMessageText(const QByteArray &body) {
     const auto document = QJsonDocument::fromJson(body);
     if (!document.isObject())
@@ -65,7 +71,7 @@ QString lastMessageText(const QByteArray &body) {
         return {};
     const auto wrapped =
         readableJson(QJsonDocument(QJsonArray{messages.last()}).toJson(QJsonDocument::Compact));
-    return wrapped.mid(1, wrapped.size() - 2).trimmed();
+    return unwrapJsonArrayItem(wrapped);
 }
 QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
     if (original == edited)
@@ -494,7 +500,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                     const auto value = messages.at(index);
                     const auto formatted = readableJson(
                         QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact));
-                    const auto display = formatted.mid(1, formatted.size() - 2).trimmed();
+                    const auto display = unwrapJsonArrayItem(formatted);
                     auto *message = new QListWidgetItem(
                         QString("%1. %2").arg(index + 1).arg(display.left(160)), messageItems_);
                     message->setData(Qt::UserRole, display);

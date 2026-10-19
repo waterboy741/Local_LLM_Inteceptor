@@ -533,6 +533,7 @@ class M1FoundationTests : public QObject {
         QVERIFY(messages->item(179)->text().contains("message 179"));
         messages->setCurrentRow(179);
         QVERIFY(messageDetails->toPlainText().contains("message 179"));
+        QVERIFY(QJsonDocument::fromJson(messageDetails->toPlainText().toUtf8()).isObject());
         QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toByteArray(), body);
         QTRY_VERIFY(details->verticalScrollBar()->maximum() > 0);
         details->verticalScrollBar()->setValue(details->verticalScrollBar()->maximum() / 2);
@@ -727,6 +728,7 @@ class M1FoundationTests : public QObject {
         held->setCurrentRow(0);
         QVERIFY(lastEditor->isEnabled());
         QVERIFY(lastEditor->toPlainText().contains("old"));
+        QVERIFY(QJsonDocument::fromJson(lastEditor->toPlainText().toUtf8()).isObject());
         lastEditor->setPlainText("{");
         applyLast->click();
         QVERIFY(lastStatus->text().contains("valid JSON"));
