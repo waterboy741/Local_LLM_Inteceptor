@@ -625,7 +625,10 @@ class M1FoundationTests : public QObject {
         client.write(request());
         QTRY_COMPARE(held->count(), 1);
         held->setCurrentRow(0);
-        QCOMPARE(originalView->toPlainText(), QString::fromUtf8(original));
+        QCOMPARE(
+            originalView->toPlainText(),
+            QString::fromUtf8(QJsonDocument::fromJson(original).toJson(QJsonDocument::Indented)));
+        QVERIFY(editor->toPlainText().contains('\n'));
         QCOMPARE(
             QJsonDocument::fromJson(editor->toPlainText().toUtf8()).object()["prompt"].toString(),
             QString("rule preview"));

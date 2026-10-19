@@ -312,17 +312,37 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     auto *heldList = new QListWidget(heldPage);
     heldList->setObjectName("heldRequests");
     heldLayout->addWidget(heldList);
-    auto *original = new QTextEdit(heldPage);
+    auto *heldDetailsSplit = new QSplitter(Qt::Vertical, heldPage);
+    heldLayout->addWidget(heldDetailsSplit);
+    auto *originalSection = new QWidget(heldDetailsSplit);
+    auto *originalLayout = new QVBoxLayout(originalSection);
+    originalLayout->setContentsMargins(0, 0, 0, 0);
+    originalLayout->addWidget(new QLabel("Original JSON", originalSection));
+    auto *original = new QTextEdit(originalSection);
     original->setReadOnly(true);
+    original->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     original->setObjectName("heldOriginalBody");
-    heldLayout->addWidget(original);
-    auto *editor = new QTextEdit(heldPage);
+    originalLayout->addWidget(original);
+    heldDetailsSplit->addWidget(originalSection);
+    auto *editSection = new QWidget(heldDetailsSplit);
+    auto *editLayout = new QVBoxLayout(editSection);
+    editLayout->setContentsMargins(0, 0, 0, 0);
+    editLayout->addWidget(new QLabel("Editable JSON", editSection));
+    auto *editor = new QTextEdit(editSection);
+    editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     editor->setObjectName("heldBodyEditor");
-    heldLayout->addWidget(editor);
-    auto *heldDiff = new QTextEdit(heldPage);
+    editLayout->addWidget(editor);
+    heldDetailsSplit->addWidget(editSection);
+    auto *diffSection = new QWidget(heldDetailsSplit);
+    auto *diffLayout = new QVBoxLayout(diffSection);
+    diffLayout->setContentsMargins(0, 0, 0, 0);
+    diffLayout->addWidget(new QLabel("Changes", diffSection));
+    auto *heldDiff = new QTextEdit(diffSection);
     heldDiff->setReadOnly(true);
+    heldDiff->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     heldDiff->setObjectName("heldModificationDiff");
-    heldLayout->addWidget(heldDiff);
+    diffLayout->addWidget(heldDiff);
+    heldDetailsSplit->addWidget(diffSection);
     connect(editor, &QTextEdit::textChanged, this, [editor, original, heldDiff] {
         heldDiff->setPlainText(
             jsonDiff(original->toPlainText().toUtf8(), editor->toPlainText().toUtf8()));
@@ -335,9 +355,9 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     heldLayout->addWidget(releaseEdited);
     const auto showHeld = [heldList, original, editor, releaseOriginal, releaseEdited] {
         const auto *item = heldList->currentItem();
-        original->setPlainText(item ? QString::fromUtf8(item->data(Qt::UserRole + 1).toByteArray())
+        original->setPlainText(item ? readableJson(item->data(Qt::UserRole + 1).toByteArray())
                                     : QString());
-        editor->setPlainText(item ? QString::fromUtf8(item->data(Qt::UserRole + 2).toByteArray())
+        editor->setPlainText(item ? readableJson(item->data(Qt::UserRole + 2).toByteArray())
                                   : QString());
         releaseOriginal->setEnabled(item);
         releaseEdited->setEnabled(item);
