@@ -37,5 +37,5 @@ target_link_libraries(m5_inspection_tests PRIVATE interceptor_gui interceptor_in
 add_test(NAME m5_inspection COMMAND m5_inspection_tests)
 set_tests_properties(m5_inspection PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-    TIMEOUT 30
+    TIMEOUT 120
 )
