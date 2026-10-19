@@ -19,10 +19,10 @@ GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner 
 
 ## Configuration and permissions
 
-To proxy the device running this app, check **Proxy this device**. Leave LLM IPv4 at `127.0.0.1` for Ollama on the same device, or enter the remote Ollama server's IPv4 address. Set LLM TCP port to the real server port (normally `11434`) and local listen port to `18080`. Click **Prepare configuration**, then **Start Observe proxy**. Set your client application's Ollama base URL to the displayed `http://127.0.0.1:18080` (or the displayed automatically allocated port). For example, with a running local Ollama model:
+To proxy the device running this app, check **Proxy this device**. Leave LLM IPv4 at `127.0.0.1` for Ollama on the same device, or enter the remote Ollama server's IPv4 address. Set LLM TCP port to the real server port (normally `11434`). The local listen port defaults to `11434`, but switches to **Automatic** when the upstream is loopback on that same port. Click **Prepare configuration**, then **Start Observe proxy**. Set your client application's Ollama base URL to the displayed listener address. For example, with a running local Ollama model and the displayed listener port substituted below:
 
 ```sh
-curl http://127.0.0.1:18080/api/generate -d '{"model":"YOUR_INSTALLED_MODEL","prompt":"Hello","stream":false}'
+curl http://127.0.0.1:LISTENER_PORT/api/generate -H 'Content-Type: application/json' -d '{"model":"YOUR_INSTALLED_MODEL","prompt":"Hello","stream":false}'
 ```
 
 The local option supplies the loopback client address and needs no research interface. Only applications configured to use this URL send requests through the interceptor; system traffic is not redirected. Keep the real Ollama server on a different port from the interceptor when using a loopback upstream. With a remote upstream such as `192.168.1.141:11434`, the local listener may also use `11434` if that port is free on this device. The relay rejects the same loopback listener port and connects directly upstream, independently of system proxy settings. Clear session stops the listener; restore the client's original Ollama base URL afterward.

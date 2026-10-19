@@ -30,7 +30,7 @@ Synthetic request and JSON/NDJSON response fixtures are in [`tests/fixtures/m0/`
 ```mermaid
 flowchart LR
     C[Client: C_IP / C_MAC] -->|Wi-Fi through AP: server IP, Mac destination MAC| P[Research Mac: P_IP / P_MAC]
-    P -->|PF redirect: local TCP listener| T[Proxy: 127.0.0.1:18080]
+    P -->|PF redirect: local TCP listener| T[Proxy: 127.0.0.1:11434]
     T -->|Independent connection| S[Ollama: S_IP / S_MAC :S_PORT]
     S -->|Response to Mac upstream socket| T
     T -->|PF reverse translation: server source IP and port| C
@@ -63,8 +63,8 @@ A **conceptual**, unattached anchor rule is:
 
 ```pf
 # Replace only after validating actual lab addresses and interface.
-rdr on LAB_IF inet proto tcp from C_IP to S_IP port S_PORT -> 127.0.0.1 port 18080
-pass in quick on LAB_IF inet proto tcp from C_IP to 127.0.0.1 port 18080 flags S/SA keep state
+rdr on LAB_IF inet proto tcp from C_IP to S_IP port S_PORT -> 127.0.0.1 port 11434
+pass in quick on LAB_IF inet proto tcp from C_IP to 127.0.0.1 port 11434 flags S/SA keep state
 ```
 
 This text is not executable PF syntax until placeholders are replaced. The filter sees the translated destination. Restrict the listener's accepted peer to the configured client as an additional application check. Do not use `rdr pass`: the installed manual states that it bypasses filter-rule inspection.

@@ -102,11 +102,13 @@ class M1FoundationTests : public QObject {
         auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
         auto *client = window.findChild<QLineEdit *>("clientIpInput");
         auto *server = window.findChild<QLineEdit *>("serverIpInput");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
         auto *prepare = window.findChild<QPushButton *>("prepareButton");
-        QVERIFY(local && interfaces && client && server && prepare);
+        QVERIFY(local && interfaces && client && server && listenPort && prepare);
         server->clear();
         local->setChecked(true);
         QCOMPARE(server->text(), QString("127.0.0.1"));
+        QCOMPARE(listenPort->value(), 0);
         QVERIFY(!interfaces->isEnabled());
         QVERIFY(!client->isEnabled());
         interfaces->clear();

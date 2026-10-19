@@ -170,14 +170,14 @@ class M4NetworkTests : public QObject {
         facts.serverMac = "02:00:00:00:00:30";
         facts.proxyServerIp = "192.0.2.30";
         facts.proxyServerPort = 18081;
-        facts.proxyListenPort = 18080;
+        facts.proxyListenPort = 11434;
         facts.interfaceUp = facts.sameLink = facts.anchorAttached = facts.proxyReady =
             facts.authorized = true;
         return facts;
     }
     static SessionSnapshot validSnapshot() {
         const auto snapshot =
-            SessionSnapshot::create(validConfig(), validFacts(), 18080, "offline-test");
+            SessionSnapshot::create(validConfig(), validFacts(), 11434, "offline-test");
         if (!snapshot)
             qFatal("Cannot construct synthetic network-session snapshot");
         return *snapshot;
@@ -272,7 +272,7 @@ class M4NetworkTests : public QObject {
         auto config = validConfig();
         auto facts = validFacts();
         QString error;
-        const auto snapshot = SessionSnapshot::create(config, facts, 18080, "offline-test", &error);
+        const auto snapshot = SessionSnapshot::create(config, facts, 11434, "offline-test", &error);
         QVERIFY2(snapshot.has_value(), qPrintable(error));
         config.serverIp = "198.51.100.30";
         config.serverPort = 12345;
@@ -280,11 +280,11 @@ class M4NetworkTests : public QObject {
         QCOMPARE(snapshot->config().serverIp, QString("192.0.2.30"));
         QCOMPARE(snapshot->config().serverPort, 18081);
         QCOMPARE(snapshot->facts().interfaceName, QString("synthetic0"));
-        QCOMPARE(snapshot->proxyPort(), 18080);
+        QCOMPARE(snapshot->proxyPort(), 11434);
         const auto rules = snapshot->pfRules();
         QVERIFY(rules.contains(
             "rdr on \"synthetic0\" inet proto tcp from 192.0.2.10 to 192.0.2.30 port 18081"));
-        QVERIFY(rules.contains("127.0.0.1 port 18080"));
+        QVERIFY(rules.contains("127.0.0.1 port 11434"));
         QVERIFY(!rules.contains("com.apple"));
         QVERIFY(!rules.contains("flush"));
         QVERIFY(!rules.contains("from any"));
@@ -320,32 +320,32 @@ class M4NetworkTests : public QObject {
                 break;
             }
             QString error;
-            QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test", &error));
+            QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test", &error));
             QVERIFY(!error.isEmpty());
         }
         auto facts = validFacts();
         facts.researchIp = "192.0.2.10";
-        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test"));
         facts = validFacts();
         facts.researchIp = "198.51.100.20";
-        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test"));
         facts = validFacts();
         facts.clientMac = "ff:ff:ff:ff:ff:ff";
-        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test"));
         facts = validFacts();
         facts.clientMac = facts.serverMac;
-        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test"));
         facts = validFacts();
         facts.prefixLength = 33;
-        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test"));
         QVERIFY(!SessionSnapshot::create(validConfig(), validFacts(), 0, "offline-test"));
-        QVERIFY(!SessionSnapshot::create(validConfig(), validFacts(), 18080, "../unsafe\nanchor"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), validFacts(), 11434, "../unsafe\nanchor"));
         auto config = validConfig();
         config.interfaceName = "synthetic0\nrdr pass";
-        QVERIFY(!SessionSnapshot::create(config, validFacts(), 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(config, validFacts(), 11434, "offline-test"));
         config = validConfig();
         config.serverPort = 65536;
-        QVERIFY(!SessionSnapshot::create(config, validFacts(), 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(config, validFacts(), 11434, "offline-test"));
     }
 
     void readinessMustMatchBothUpstreamAndLocalListener() {
@@ -358,10 +358,10 @@ class M4NetworkTests : public QObject {
             else
                 facts.proxyListenPort = 18082;
             QString error;
-            QVERIFY(!SessionSnapshot::create(validConfig(), facts, 18080, "offline-test", &error));
+            QVERIFY(!SessionSnapshot::create(validConfig(), facts, 11434, "offline-test", &error));
             QVERIFY(!error.isEmpty());
         }
-        QVERIFY(!SessionSnapshot::create(validConfig(), NetworkFacts{}, 18080, "offline-test"));
+        QVERIFY(!SessionSnapshot::create(validConfig(), NetworkFacts{}, 0, "offline-test"));
         auto facts = validFacts();
         facts.proxyListenPort = validConfig().serverPort;
         const auto equalPort =
@@ -707,7 +707,7 @@ class M4NetworkTests : public QObject {
             } else {
                 config.apiPaths = {"/api/chat"};
             }
-            const auto alternative = SessionSnapshot::create(config, facts, 18080, "offline-test");
+            const auto alternative = SessionSnapshot::create(config, facts, 11434, "offline-test");
             QVERIFY(alternative.has_value());
             auto request = command(HelperCommand::Type::Start);
             request.snapshot = alternative;

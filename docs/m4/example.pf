@@ -1,6 +1,6 @@
 # Synthetic documentation addresses; syntax validation only, never installed.
-rdr on "en0" inet proto tcp from 192.0.2.10 to 192.0.2.30 port 18081 -> 127.0.0.1 port 18080
-pass in quick on "en0" inet proto tcp from 192.0.2.10 to 127.0.0.1 port 18080 flags S/SA keep state label "llm_m4-example"
+rdr on "en0" inet proto tcp from 192.0.2.10 to 192.0.2.30 port 18081 -> 127.0.0.1 port 11434
+pass in quick on "en0" inet proto tcp from 192.0.2.10 to 127.0.0.1 port 11434 flags S/SA keep state label "llm_m4-example"
 pass in quick on "en0" inet from 192.0.2.10 to 192.0.2.30 keep state label "llm_m4-example"
 pass in quick on "en0" inet from 192.0.2.30 to 192.0.2.10 keep state label "llm_m4-example"
 pass out quick on "en0" inet proto tcp from 192.0.2.20 to 192.0.2.30 port 18081 flags S/SA keep state label "llm_m4-example"

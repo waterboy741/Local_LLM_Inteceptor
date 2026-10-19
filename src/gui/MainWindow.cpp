@@ -159,7 +159,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     listenPort_ = new QSpinBox(panel);
     listenPort_->setObjectName("localListenPortInput");
     listenPort_->setRange(0, 65535);
-    listenPort_->setValue(18080);
+    listenPort_->setValue(11434);
     listenPort_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     listenPort_->setSpecialValueText("Automatic");
     form->addRow("Local listen port (127.0.0.1)", listenPort_);
@@ -543,6 +543,9 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (idle && local) {
             if (server_->text().isEmpty())
                 server_->setText("127.0.0.1");
+            if (QHostAddress(server_->text()).isLoopback() &&
+                listenPort_->value() == port_->value())
+                listenPort_->setValue(0);
             status_->setText(
                 "This device — prepare, start, then update your client's Ollama base URL.");
         }

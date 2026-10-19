@@ -47,7 +47,7 @@ Use ARP only to get selected traffic onto the Mac. Use macOS Packet Filter (PF) 
 ```text
 Client thinks it connects to server:11434
   -> Ethernet frame reaches research Mac
-  -> PF translates selected destination to local proxy:18080
+  -> PF translates selected destination to local proxy:11434
   -> kernel TCP stack accepts the connection
   -> HTTP proxy inspects or edits the JSON request
   -> separate upstream TCP connection to real server:11434
@@ -65,7 +65,7 @@ Conceptual flow identities, using a loopback listener:
 | View | Source | Destination |
 | --- | --- | --- |
 | Client's original connection | client:53000 | server:11434 |
-| Translated downstream connection | client:53000 | 127.0.0.1:18080 |
+| Translated downstream connection | client:53000 | 127.0.0.1:11434 |
 | Independent upstream connection | research-Mac:ephemeral | server:11434 |
 | Reply visible to client | server:11434 | client:53000 |
 
