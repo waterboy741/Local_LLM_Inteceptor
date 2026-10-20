@@ -8,6 +8,7 @@
 namespace interceptor {
 struct ProxyOptions {
     QString listenAddress = "127.0.0.1";
+    QString allowedClientIp;
     int listenPort = 0;
     int timeoutMs = 2000;
     std::size_t maxBodyBytes = 1048576;

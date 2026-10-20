@@ -396,6 +396,8 @@ class M1FoundationTests : public QObject {
         config.serverIp = "127.0.0.1";
         config.serverPort = mock.serverPort();
         config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
         QVERIFY(controller.prepare(config));
         QVERIFY(start->isEnabled());
         start->click();
@@ -500,6 +502,8 @@ class M1FoundationTests : public QObject {
         config.serverIp = "127.0.0.1";
         config.serverPort = mock.serverPort();
         config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
         config.apiPaths = {"/v1/chat/completions"};
         QVERIFY(controller.prepare(config));
         start->click();
@@ -613,6 +617,8 @@ class M1FoundationTests : public QObject {
         config.serverIp = "127.0.0.1";
         config.serverPort = mock.serverPort();
         config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
@@ -716,6 +722,8 @@ class M1FoundationTests : public QObject {
         config.serverPort = mock.serverPort();
         config.apiPaths = {"/v1/chat/completions"};
         config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
@@ -791,6 +799,8 @@ class M1FoundationTests : public QObject {
         config.serverPort = mock.serverPort();
         config.apiPaths = {"/v1/chat/completions"};
         config.explicitProxy = true;
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =

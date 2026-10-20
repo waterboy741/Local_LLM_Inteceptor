@@ -11,6 +11,7 @@
 #include <QJsonParseError>
 #include <QMetaEnum>
 #include <QNetworkAccessManager>
+#include <QNetworkInterface>
 #include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QPointer>
@@ -191,6 +192,7 @@ bool validModification(const ModificationOptions &options) {
 class LimitedTcpServer : public QTcpServer {
   public:
     using QTcpServer::QTcpServer;
+    QHostAddress allowedClientAddress;
     int count = 0;
     QHash<QTcpSocket *, int> responding;
     QHash<quint16, QPointer<QTcpSocket>> sockets;
@@ -198,6 +200,11 @@ class LimitedTcpServer : public QTcpServer {
         auto *socket = new QTcpSocket(this);
         if (!socket->setSocketDescriptor(descriptor)) {
             delete socket;
+            return;
+        }
+        if (!allowedClientAddress.isNull() && socket->peerAddress() != allowedClientAddress) {
+            socket->abort();
+            socket->deleteLater();
             return;
         }
         if (count >= 24) {
@@ -260,6 +267,9 @@ class Engine : public QAbstractHttpServer {
         limitsConfig.setKeepAliveTimeout(std::chrono::seconds(2));
         setConfiguration(limitsConfig);
         listener.setMaxPendingConnections(24);
+        listener.allowedClientAddress = options.allowedClientIp.isEmpty()
+                                            ? QHostAddress()
+                                            : QHostAddress(options.allowedClientIp);
         holdTimer.setInterval(25);
         connect(&holdTimer, &QTimer::timeout, this, [this] {
             const auto current = holds;
@@ -275,10 +285,15 @@ class Engine : public QAbstractHttpServer {
         holdTimer.start();
     }
     bool begin() {
-        if (!listener.listen(QHostAddress::LocalHost, static_cast<quint16>(options.listenPort)))
+        if (!listener.listen(QHostAddress(options.listenAddress),
+                             static_cast<quint16>(options.listenPort)))
             return false;
-        // Check the allocated port too: automatic listeners must never relay into themselves.
-        if (QHostAddress(config.serverIp).isLoopback() &&
+        // Check the actual bind address and allocated port to prevent upstream self-relay.
+        const QHostAddress serverAddress(config.serverIp);
+        const QHostAddress boundAddress(options.listenAddress);
+        const bool sameEndpoint = serverAddress == boundAddress;
+        const bool loopbackAliasCollision = serverAddress.isLoopback() && boundAddress.isLoopback();
+        if ((sameEndpoint || loopbackAliasCollision) &&
             config.serverPort == listener.serverPort()) {
             listener.close();
             return false;
@@ -664,12 +679,50 @@ ProxyServer::~ProxyServer() { stop(); }
 bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (impl_ || config.serverPort < 1 || config.serverPort > 65535 || config.apiPaths.isEmpty() ||
-        options.listenAddress != "127.0.0.1" || options.listenPort < 0 ||
-        options.listenPort > 65535 || options.timeoutMs < 1 || options.maxBodyBytes < 1 ||
-        options.maxBodyBytes > 16 * 1024 * 1024 || options.maxHistory < 1 ||
-        options.maxHistory > 1000 || options.maxHistoryBytes < 1 ||
+        options.listenPort < 0 || options.listenPort > 65535 || options.timeoutMs < 1 ||
+        options.maxBodyBytes < 1 || options.maxBodyBytes > 16 * 1024 * 1024 ||
+        options.maxHistory < 1 || options.maxHistory > 1000 || options.maxHistoryBytes < 1 ||
         options.maxHistoryBytes > 256 * 1024 * 1024 || !replayHistory_.empty())
         return false;
+    const bool remoteExplicitProxy = config.explicitProxy && !config.interfaceName.isEmpty();
+    const bool localExplicitProxy = config.explicitProxy && config.interfaceName.isEmpty() &&
+                                    QHostAddress(config.clientIp).isLoopback();
+    QHostAddress listenAddress;
+    if (!listenAddress.setAddress(options.listenAddress) ||
+        listenAddress.protocol() != QAbstractSocket::IPv4Protocol || listenAddress.isNull() ||
+        listenAddress.isMulticast() || listenAddress == QHostAddress::AnyIPv4 ||
+        listenAddress == QHostAddress::Broadcast ||
+        (listenAddress.toIPv4Address() & 0xffff0000U) == 0xa9fe0000U)
+        return false;
+    if (remoteExplicitProxy) {
+        const auto networkInterface = QNetworkInterface::interfaceFromName(config.interfaceName);
+        if (options.listenAddress == config.clientIp || listenAddress.isLoopback() ||
+            !networkInterface.isValid() ||
+            !networkInterface.flags().testFlag(QNetworkInterface::IsUp) ||
+            !networkInterface.flags().testFlag(QNetworkInterface::IsRunning) ||
+            options.allowedClientIp != config.clientIp)
+            return false;
+        bool addressBelongsToInterface = false;
+        for (const auto &entry : networkInterface.addressEntries())
+            if (entry.ip() == listenAddress &&
+                entry.ip().protocol() == QAbstractSocket::IPv4Protocol)
+                addressBelongsToInterface = true;
+        if (!addressBelongsToInterface)
+            return false;
+    } else {
+        if (options.listenAddress != "127.0.0.1" || !options.allowedClientIp.isEmpty() ||
+            (config.explicitProxy && !localExplicitProxy))
+            return false;
+    }
+    if (!options.allowedClientIp.isEmpty()) {
+        QHostAddress allowedAddress;
+        if (!allowedAddress.setAddress(options.allowedClientIp) ||
+            allowedAddress.protocol() != QAbstractSocket::IPv4Protocol ||
+            allowedAddress.isLoopback() || allowedAddress.isMulticast() ||
+            allowedAddress == QHostAddress::AnyIPv4 || allowedAddress == QHostAddress::Broadcast ||
+            (allowedAddress.toIPv4Address() & 0xffff0000U) == 0xa9fe0000U)
+            return false;
+    }
     QHostAddress address;
     if (!address.setAddress(config.serverIp) ||
         address.protocol() != QAbstractSocket::IPv4Protocol || address.isMulticast() ||

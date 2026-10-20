@@ -4,7 +4,9 @@
 
 #include <QElapsedTimer>
 #include <QHostAddress>
+#include <QNetworkInterface>
 #include <QPointer>
+#include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
@@ -12,6 +14,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <sys/resource.h>
 
 using namespace interceptor;
@@ -34,6 +37,38 @@ class M2ProxyTests : public QObject {
     }
     static void connectClient(QTcpSocket &client, ProxyServer &proxy) {
         client.connectToHost(QHostAddress::LocalHost, proxy.listenPort());
+    }
+    static std::optional<QPair<QString, QString>> activeNonLoopbackIPv4() {
+        for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
+            const auto flags = networkInterface.flags();
+            if (!flags.testFlag(QNetworkInterface::IsUp) ||
+                !flags.testFlag(QNetworkInterface::IsRunning))
+                continue;
+            for (const auto &entry : networkInterface.addressEntries()) {
+                const auto address = entry.ip();
+                if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isLoopback() &&
+                    !address.isMulticast() && address != QHostAddress::AnyIPv4 &&
+                    address != QHostAddress::Broadcast)
+                    return QPair<QString, QString>{networkInterface.name(), address.toString()};
+            }
+        }
+        return std::nullopt;
+    }
+    static std::optional<QString> otherActiveNonLoopbackIPv4(const QString &excludedAddress) {
+        for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
+            const auto flags = networkInterface.flags();
+            if (!flags.testFlag(QNetworkInterface::IsUp) ||
+                !flags.testFlag(QNetworkInterface::IsRunning))
+                continue;
+            for (const auto &entry : networkInterface.addressEntries()) {
+                const auto address = entry.ip();
+                if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isLoopback() &&
+                    !address.isMulticast() && address != QHostAddress::AnyIPv4 &&
+                    address != QHostAddress::Broadcast && address.toString() != excludedAddress)
+                    return address.toString();
+            }
+        }
+        return std::nullopt;
     }
 
   private slots:
@@ -79,6 +114,108 @@ class M2ProxyTests : public QObject {
         QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
         QTRY_COMPARE(proxy.history().size(), std::size_t(1));
         QCOMPARE(proxy.history().front().body, body);
+    }
+
+    void remoteExplicitProxyStartsOnSelectedInterface() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("No active non-loopback IPv4 interface is available for this local bind test");
+        MockOllama mock;
+        SessionConfig config{selected->first,        "192.0.2.10",      "127.0.0.1",
+                             int(mock.serverPort()), {"/api/generate"}, true};
+        QVERIFY(config.validate().isEmpty());
+        ProxyOptions options;
+        options.listenAddress = selected->second;
+        options.allowedClientIp = config.clientIp;
+
+        ProxyServer proxy;
+        QVERIFY2(proxy.start(config, options),
+                 "The explicit proxy should bind its selected local interface");
+        QVERIFY(proxy.listenPort() != 0);
+        proxy.stop();
+    }
+
+    void remoteExplicitProxyAllowsConfiguredSourceEndToEnd() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("No active non-loopback IPv4 interface is available for this local bind test");
+        const auto clientAddress = otherActiveNonLoopbackIPv4(selected->second);
+        if (!clientAddress)
+            QSKIP("An end-to-end source test requires two locally assigned non-loopback IPv4 "
+                  "addresses");
+        MockOllama mock;
+        SessionConfig config{selected->first,        *clientAddress,    "127.0.0.1",
+                             int(mock.serverPort()), {"/api/generate"}, true};
+        QVERIFY(config.validate().isEmpty());
+        ProxyOptions options;
+        options.listenAddress = selected->second;
+        options.allowedClientIp = *clientAddress;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(config, options));
+
+        QTcpSocket client;
+        QVERIFY(client.bind(QHostAddress(*clientAddress)));
+        client.connectToHost(QHostAddress(selected->second), proxy.listenPort());
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        QCOMPARE(client.localAddress(), QHostAddress(*clientAddress));
+        const QByteArray body = "{\"prompt\":\"allowed remote source\",\"stream\":false}";
+        client.write(request(body));
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        QCOMPARE(mock.bodies.front(), body);
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        proxy.stop();
+    }
+
+    void remoteExplicitProxyRejectsWrongClientSourceWhenLocallyRoutable() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("No active non-loopback IPv4 interface is available for this local bind test");
+        MockOllama mock;
+        SessionConfig config{selected->first,        "192.0.2.10",      "127.0.0.1",
+                             int(mock.serverPort()), {"/api/generate"}, true};
+        ProxyOptions options;
+        options.listenAddress = selected->second;
+        options.allowedClientIp = config.clientIp;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(config, options));
+
+        QTcpSocket client;
+        if (!client.bind(QHostAddress::LocalHost))
+            QSKIP("This host cannot bind a local test client to loopback");
+        QSignalSpy connected(&client, &QTcpSocket::connected);
+        client.connectToHost(QHostAddress(selected->second), proxy.listenPort());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            connected.count() > 0 || client.state() == QAbstractSocket::UnconnectedState, 3000);
+        if (connected.isEmpty())
+            QSKIP("The host cannot route a loopback-sourced socket to its interface address");
+        QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
+        QTest::qWait(100);
+        QVERIFY(mock.bodies.isEmpty());
+        QVERIFY(proxy.history().empty());
+        proxy.stop();
+    }
+
+    void remoteExplicitProxyRejectsInvalidAndUnownedBindAddresses() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("No active non-loopback IPv4 interface is available for bind validation");
+        MockOllama mock;
+        SessionConfig config{selected->first,        "192.0.2.10",      "127.0.0.1",
+                             int(mock.serverPort()), {"/api/generate"}, true};
+        ProxyServer proxy;
+        for (const QString &bindAddress :
+             {QStringLiteral("not-an-ip-address"), QStringLiteral("203.0.113.254")}) {
+            ProxyOptions options;
+            options.listenAddress = bindAddress;
+            options.allowedClientIp = config.clientIp;
+            QVERIFY(!proxy.start(config, options));
+            QCOMPARE(proxy.listenPort(), quint16(0));
+        }
+        ProxyOptions missingClient;
+        missingClient.listenAddress = selected->second;
+        QVERIFY(!proxy.start(config, missingClient));
+        QCOMPARE(proxy.listenPort(), quint16(0));
     }
 
     void localListenerCannotForwardToItselfAndCanRestart_data() {

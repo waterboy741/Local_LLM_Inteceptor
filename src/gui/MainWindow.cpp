@@ -8,6 +8,7 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -30,8 +31,27 @@
 #include <QVBoxLayout>
 #include <functional>
 #include <memory>
+#include <optional>
 namespace interceptor {
 namespace {
+std::optional<QString> usableInterfaceIPv4(const QString &interfaceName) {
+    const auto networkInterface = QNetworkInterface::interfaceFromName(interfaceName);
+    if (!networkInterface.isValid() ||
+        !networkInterface.flags().testFlag(QNetworkInterface::IsUp) ||
+        !networkInterface.flags().testFlag(QNetworkInterface::IsRunning))
+        return std::nullopt;
+    for (const auto &entry : networkInterface.addressEntries()) {
+        const auto address = entry.ip();
+        if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isNull() ||
+            address.isLoopback() || address.isMulticast() || address == QHostAddress::AnyIPv4 ||
+            address == QHostAddress::Broadcast || address == entry.broadcast() ||
+            (address.toIPv4Address() & 0xffff0000U) == 0xa9fe0000U)
+            continue;
+        return address.toString();
+    }
+    return std::nullopt;
+}
+
 QString readableJson(const QByteArray &raw) {
     // Bound indentation expansion before asking Qt to allocate the formatted document.
     constexpr auto maxPrettyBytes = 64 * 1024;
@@ -145,10 +165,8 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     auto *localDevice = new QCheckBox("Proxy this device", panel);
     localDevice->setObjectName("localDeviceInput");
     layout->addWidget(localDevice);
-    auto *localHelp = new QLabel(
-        "For this device, set your Ollama client's base URL to the listener shown after Start. "
-        "Only clients using that URL are proxied.",
-        panel);
+    auto *localHelp =
+        new QLabel("The proxy only receives requests sent to its displayed base URL.", panel);
     localHelp->setWordWrap(true);
     layout->addWidget(localHelp);
     auto *form = new QFormLayout;
@@ -183,7 +201,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     listenPort_->setValue(11434);
     listenPort_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     listenPort_->setSpecialValueText("Automatic");
-    form->addRow("Local listen port (127.0.0.1)", listenPort_);
+    form->addRow("Proxy listen port (local or selected interface)", listenPort_);
     form->addRow("API paths (comma separated)", paths_);
     auto *historyLimit = new QSpinBox(panel);
     historyLimit->setObjectName("historyRecordLimitInput");
@@ -747,11 +765,29 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                     static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
                 // A first Ollama request may load the model before sending response headers.
                 options.timeoutMs = 120000;
+                const bool remoteDevice = !config->interfaceName.isEmpty();
+                if (remoteDevice) {
+                    const auto address = usableInterfaceIPv4(config->interfaceName);
+                    if (!address) {
+                        status_->setText("The selected interface is inactive or has no usable "
+                                         "IPv4 address. Refresh interfaces and try again.");
+                        return;
+                    }
+                    options.listenAddress = *address;
+                    options.allowedClientIp = config->clientIp;
+                }
                 if (proxy_.start(*config, options)) {
-                    status_->setText(
-                        QString("Local proxy listening at http://127.0.0.1:%1 — set the "
-                                "client Ollama base URL here")
-                            .arg(proxy_.listenPort()));
+                    const QString url =
+                        QString("http://%1:%2").arg(options.listenAddress).arg(proxy_.listenPort());
+                    status_->setText(remoteDevice
+                                         ? QString("Proxy listening at %1 — set the remote "
+                                                   "OpenCode Ollama base URL to this Mac LAN "
+                                                   "address. This does not redirect requests to "
+                                                   "the unchanged server address.")
+                                               .arg(url)
+                                         : QString("Local proxy listening at %1 — set this "
+                                                   "device's Ollama base URL here")
+                                               .arg(url));
                     startProxy->setEnabled(false);
                     listenPort_->setEnabled(false);
                 } else
@@ -803,13 +839,18 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     };
     connect(refresh, &QPushButton::clicked, this, refreshInterfaces);
     refreshInterfaces();
-    const auto updateLocalMode = [this, localDevice, prepare, refresh] {
+    const auto updateLocalMode = [this, localDevice, localHelp, prepare, refresh] {
         const bool idle = controller_->state() == SessionController::State::Idle;
         const bool local = localDevice->isChecked();
         interface_->setEnabled(idle && !local);
         refresh->setEnabled(idle && !local);
         client_->setEnabled(idle && !local);
         prepare->setEnabled(idle && (local || interface_->count() > 0));
+        localHelp->setText(local ? "For this device, set the Ollama base URL to the listener shown "
+                                   "after Start."
+                                 : "For a remote device, set its client IPv4 and select the Mac's "
+                                   "active interface. After Start, set OpenCode's Ollama base URL "
+                                   "to the LAN address shown.");
         if (idle && local) {
             if (server_->text().isEmpty())
                 server_->setText("127.0.0.1");
@@ -818,6 +859,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         }
     };
     connect(localDevice, &QCheckBox::toggled, this, [updateLocalMode] { updateLocalMode(); });
+    updateLocalMode();
     connect(prepare, &QPushButton::clicked, this, [this, localDevice] {
         if (localDevice->isChecked() && QHostAddress(server_->text()).isLoopback() &&
             listenPort_->value() == port_->value())
