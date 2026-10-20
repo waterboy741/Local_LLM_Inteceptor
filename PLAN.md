@@ -192,6 +192,8 @@ Acceptance:
 - Helper packaging, installation, authentication, required privileges, watchdog behavior, and a multi-device walkthrough are verified with actual limitations.
 - Compare live latency/streaming/throughput against stated targets. Resolve findings and obtain all three COMPLETE votes before claiming live support.
 
+M6 preparation update (October 19, 2026): the opt-in, source-address-bound TCP preflight succeeded against the authorized lab endpoint, one ICMP echo to the client succeeded, both peers had local neighbor entries, and an Ollama version endpoint returned HTTP 200. A synthetic request to the client's OpenAI-compatible chat endpoint returned one completion. Sanitized observations are recorded locally; ignored raw lab artifacts are not committed. A separate read-only PF diagnostics mode is prepared and returned `permission_denied` on the first query without administrator privileges; no PF rules or state were read. No PF, ARP, forwarding, route, or interface settings were changed. These checks do not prove packet egress on the selected interface, Wi-Fi/L2 compatibility, ARP redirection, active PF evaluation, bidirectional delivery, reverse translation, helper lifecycle, device walkthrough, or live support. M6 remains incomplete.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review

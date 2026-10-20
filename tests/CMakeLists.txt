@@ -39,3 +39,13 @@ set_tests_properties(m5_inspection PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     TIMEOUT 120
 )
+
+qt_add_executable(m6_lab_preflight_tests M6LabPreflightTests.cpp)
+target_link_libraries(m6_lab_preflight_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_lab_preflight COMMAND m6_lab_preflight_tests)
+set_tests_properties(m6_lab_preflight PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_pf_diagnostics_tests M6PfDiagnosticsTests.cpp)
+target_link_libraries(m6_pf_diagnostics_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_pf_diagnostics COMMAND m6_pf_diagnostics_tests)
+set_tests_properties(m6_pf_diagnostics PROPERTIES TIMEOUT 30)
