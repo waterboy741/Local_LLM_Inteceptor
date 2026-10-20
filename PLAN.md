@@ -196,6 +196,8 @@ M6 preparation update (October 19, 2026): the opt-in, source-address-bound TCP p
 
 M6 helper groundwork (October 19, 2026): a bounded one-request Unix-socket transport verifies kernel peer UID/GID, accepts only Heartbeat/Stop, and obtains time from a trusted monotonic clock callback. Processes under the same UID remain indistinguishable; this does not verify app identity or signing. Start bootstrap, an independent watchdog, an installable helper, listener, backend, and live network mutation remain unsupported.
 
+Remote-device explicit-proxy check (October 19, 2026): the user manually verified that a live request from another device reaches the proxy and upstream LLM after configuring that client to use the research Mac's displayed LAN listener URL. Debug, release, and sanitizer suites passed locally, and the push workflow for `ceb7030` succeeded. This confirms the reported explicit-proxy path only; unchanged-server-address transparent redirection and the remaining M6 acceptance checks are still open.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review
