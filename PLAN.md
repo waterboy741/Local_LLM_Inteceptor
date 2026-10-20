@@ -194,6 +194,8 @@ Acceptance:
 
 M6 preparation update (October 19, 2026): the opt-in, source-address-bound TCP preflight succeeded against the authorized lab endpoint, one ICMP echo to the client succeeded, both peers had local neighbor entries, and an Ollama version endpoint returned HTTP 200. A synthetic request to the client's OpenAI-compatible chat endpoint returned one completion. Sanitized observations are recorded locally; ignored raw lab artifacts are not committed. A separate read-only PF diagnostics mode is prepared and returned `permission_denied` on the first query without administrator privileges; no PF rules or state were read. No PF, ARP, forwarding, route, or interface settings were changed. These checks do not prove packet egress on the selected interface, Wi-Fi/L2 compatibility, ARP redirection, active PF evaluation, bidirectional delivery, reverse translation, helper lifecycle, device walkthrough, or live support. M6 remains incomplete.
 
+M6 helper groundwork (October 19, 2026): a Unix-socket credential primitive reads kernel-reported peer UID/GID and rejects invalid or unconnected sockets. Processes under the same UID remain indistinguishable; this does not verify app identity or signing. No installable helper, live IPC service, backend, or network mutation is included.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review

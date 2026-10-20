@@ -22,6 +22,10 @@ The application anchor is `llm_interceptor/<session-id>` and rules carry a sessi
 
 This is an offline authorization model, not a shipped IPC transport or cryptographic protocol. Tests inject synthetic verified peers and capabilities. A future local XPC transport must obtain OS-verified identity/audit credentials independently of request bytes, securely issue/distribute session capabilities, bind them to the active session, and enforce signing/installation policy. No generic execute-command, arbitrary sysctl, or global PF flush operation exists in the dispatcher. The real transport and persistence implementation remain M6. Capability comparison in this offline model uses QByteArray equality; constant-time secret validation and secure issuance/distribution are real transport requirements, not claimed here.
 
+## M6 Unix-socket credential primitive
+
+`verifiedPeerForUnixSocket()` now derives the peer UID/GID from a connected Unix-domain socket using `getpeereid` on macOS and `SO_PEERCRED` on Linux. It rejects non-Unix, unconnected, invalid, or unsupported sockets and never reads identity from request data. The returned dispatcher identity is only the kernel-reported UID/GID tuple. Processes running as the same UID are not distinguished, and this does not verify an executable, code signature, or audit token. A privileged service must enforce the intended signing/installation policy separately. No listener, request decoder, capability bootstrap, concrete system backend, or privileged operation is included in this groundwork; it does not change network state.
+
 ## Injected operations and ownership
 
 The backend is borrowed and must outlive `NetworkSession`; all session methods/getters belong to its QObject thread. Operations return status without throwing. The backend must enforce a single host-wide lease across cooperating helper sessions, not merely a lock in one GUI object. It owns token issuance and must reject stale/nonowned tokens.
