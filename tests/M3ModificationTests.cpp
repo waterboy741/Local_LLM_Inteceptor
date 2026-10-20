@@ -305,7 +305,7 @@ class M3ModificationTests : public QObject {
             const int afterEmptySuffix = int(mock.bodies.size()) + 1;
             QTRY_COMPARE(mock.bodies.size(), afterEmptySuffix);
             QCOMPARE(mock.bodies.back(), emptySuffix);
-            QVERIFY(proxy.history().size() >= std::size_t(originals.size()));
+            QTRY_COMPARE(proxy.history().size(), std::size_t(originals.size() + 2));
             QVERIFY(!proxy.history().back().modified);
         }
     }
