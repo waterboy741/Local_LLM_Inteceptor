@@ -55,7 +55,7 @@ class FakePfAnchorCommandRunner final : public PfAnchorCommandRunner {
         QString anchor;
     };
 
-    PfAnchorCommandResult nextResult{PfAnchorCommandStatus::Completed, 0, true};
+    PfAnchorCommandResult nextResult{PfAnchorCommandStatus::Completed, 0, true, true};
     QVector<Call> calls;
 
     PfAnchorCommandResult execute(const PfAnchorCommand &command, int timeoutMs,
@@ -297,12 +297,13 @@ class M6PfAnchorOperationsTests : public QObject {
         const auto session = snapshot();
         QVERIFY(session.has_value());
         const QList<QPair<PfAnchorCommandResult, QString>> cases = {
-            {{PfAnchorCommandStatus::PermissionDenied, 1, true}, "permission_denied"},
-            {{PfAnchorCommandStatus::TimedOut, -1, true}, "timed_out"},
-            {{PfAnchorCommandStatus::OutputLimitExceeded, -1, true}, "output_limit_exceeded"},
-            {{PfAnchorCommandStatus::Failed, 2, true}, "command_failed"},
-            {{PfAnchorCommandStatus::Completed, 0, false}, "command_not_started"},
-            {{PfAnchorCommandStatus::Completed, 1, true}, "nonzero_exit"},
+            {{PfAnchorCommandStatus::PermissionDenied, 1, true, true}, "permission_denied"},
+            {{PfAnchorCommandStatus::TimedOut, -1, true, true}, "timed_out"},
+            {{PfAnchorCommandStatus::OutputLimitExceeded, -1, true, true}, "output_limit_exceeded"},
+            {{PfAnchorCommandStatus::Failed, 2, true, true}, "command_failed"},
+            {{PfAnchorCommandStatus::Completed, 0, false, false}, "command_not_started"},
+            {{PfAnchorCommandStatus::Completed, 1, true, true}, "nonzero_exit"},
+            {{PfAnchorCommandStatus::Completed, 0, true, false}, "process_unreaped"},
         };
         for (const auto &[commandResult, expectedStatus] : cases) {
             for (const bool install : {true, false}) {
@@ -329,7 +330,7 @@ class M6PfAnchorOperationsTests : public QObject {
         QVERIFY(session.has_value());
         FakePfAnchorAuthorization authorization;
         FakePfAnchorCommandRunner runner;
-        runner.nextResult = {PfAnchorCommandStatus::Failed, 1, true};
+        runner.nextResult = {PfAnchorCommandStatus::Failed, 1, true, true};
         PfAnchorOperations operations(authorization, runner);
 
         const auto result = operations.install(*session, "lease-token");

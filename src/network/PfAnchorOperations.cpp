@@ -104,13 +104,15 @@ PfAnchorOperationResult PfAnchorOperations::apply(const SessionSnapshot &snapsho
     const PfAnchorCommand command(operation, anchor, rules);
     const auto commandResult = runner_.execute(command, commandTimeoutMs, maximumOutputBytes);
     result.mayHaveApplied = commandResult.started;
-    if (commandResult.started && commandResult.status == PfAnchorCommandStatus::Completed &&
-        commandResult.exitCode == 0) {
+    if (commandResult.started && commandResult.processReaped &&
+        commandResult.status == PfAnchorCommandStatus::Completed && commandResult.exitCode == 0) {
         result.success = true;
         result.statusCode = "completed";
         return result;
     }
-    if (!commandResult.started && commandResult.status == PfAnchorCommandStatus::Completed)
+    if (commandResult.started && !commandResult.processReaped)
+        result.statusCode = "process_unreaped";
+    else if (!commandResult.started && commandResult.status == PfAnchorCommandStatus::Completed)
         result.statusCode = "command_not_started";
     else if (commandResult.started && commandResult.status == PfAnchorCommandStatus::Completed &&
              commandResult.exitCode != 0)

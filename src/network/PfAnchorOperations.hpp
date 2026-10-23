@@ -40,6 +40,7 @@ struct PfAnchorCommandResult {
     PfAnchorCommandStatus status = PfAnchorCommandStatus::Failed;
     int exitCode = -1;
     bool started = false;
+    bool processReaped = false;
 };
 
 class PfAnchorAuthorization {

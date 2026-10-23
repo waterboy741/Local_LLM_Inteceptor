@@ -60,6 +60,11 @@ target_link_libraries(m6_pf_anchor_operations_tests PRIVATE interceptor_network 
 add_test(NAME m6_pf_anchor_operations COMMAND m6_pf_anchor_operations_tests)
 set_tests_properties(m6_pf_anchor_operations PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_pf_anchor_qprocess_runner_tests M6PfAnchorQProcessRunnerTests.cpp)
+target_link_libraries(m6_pf_anchor_qprocess_runner_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_pf_anchor_qprocess_runner COMMAND m6_pf_anchor_qprocess_runner_tests)
+set_tests_properties(m6_pf_anchor_qprocess_runner PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_unix_peer_credentials_tests M6UnixPeerCredentialsTests.cpp)
 target_link_libraries(m6_unix_peer_credentials_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_unix_peer_credentials COMMAND m6_unix_peer_credentials_tests)
