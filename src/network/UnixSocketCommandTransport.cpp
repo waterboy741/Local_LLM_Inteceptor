@@ -200,7 +200,7 @@ bool sendRejected(int fd, QString *error, const QString &reason) {
 } // namespace
 
 bool dispatchOneUnixSocketCommand(int connectedSocketFd, HelperDispatcher &dispatcher,
-                                  const std::function<qint64()> &monotonicClock, QString *error) {
+                                  QString *error) {
     if (error)
         error->clear();
     const auto peer = verifiedPeerForUnixSocket(connectedSocketFd, error);
@@ -239,16 +239,10 @@ bool dispatchOneUnixSocketCommand(int connectedSocketFd, HelperDispatcher &dispa
     if (!decodeCommand(frame, &command, &decodeError))
         return sendRejected(connectedSocketFd, error, decodeError);
 
-    if (!monotonicClock)
+    const auto nowMs = dispatcher.trustedMonotonicNowMs();
+    if (!nowMs)
         return sendRejected(connectedSocketFd, error, QStringLiteral("trusted_clock_unavailable"));
-    try {
-        command.nowMs = monotonicClock();
-    } catch (...) {
-        return sendRejected(connectedSocketFd, error, QStringLiteral("trusted_clock_failed"));
-    }
-    if (command.nowMs < 0)
-        return sendRejected(connectedSocketFd, error,
-                            QStringLiteral("invalid_trusted_clock_value"));
+    command.nowMs = *nowMs;
 
     const bool accepted = dispatcher.dispatch(*peer, command);
     QElapsedTimer responseTimer;

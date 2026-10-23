@@ -1,15 +1,51 @@
 #include "network/ArpCodec.hpp"
 #include "network/HelperDispatcher.hpp"
+#include "network/HelperWatchdog.hpp"
 #include "network/NetworkSession.hpp"
 
 #include <QFile>
 #include <QSet>
 #include <QSignalSpy>
+#include <QThread>
 #include <QtTest>
+#include <functional>
+#include <stdexcept>
 #include <type_traits>
 
 using namespace interceptor;
 static_assert(!std::is_default_constructible_v<SessionSnapshot>);
+
+class FakeHelperWatchdogTimer : public HelperWatchdogTimer {
+  public:
+    void setTimeoutHandler(std::function<void()> handler) override {
+        handler_ = std::move(handler);
+    }
+    void start(int intervalMs) override {
+        active_ = true;
+        intervalMs_ = intervalMs;
+        ++starts_;
+    }
+    void stop() override {
+        if (active_)
+            ++stops_;
+        active_ = false;
+    }
+    bool isActive() const override { return active_; }
+    void fire() {
+        if (active_ && handler_)
+            handler_();
+    }
+    int intervalMs() const { return intervalMs_; }
+    int starts() const { return starts_; }
+    int stops() const { return stops_; }
+
+  private:
+    std::function<void()> handler_;
+    bool active_ = false;
+    int intervalMs_ = 0;
+    int starts_ = 0;
+    int stops_ = 0;
+};
 
 // Every mutation below affects only in-memory synthetic state. No OS adapter is
 // linked or invoked by this test backend.
@@ -28,6 +64,8 @@ class FakeSystemOperations : public SystemOperations {
     int nextLease = 1;
     bool changeDuringRestore = false;
     bool retainFails = false;
+    std::function<void()> onInterfaceAvailable;
+    int interfaceChecks = 0;
     std::optional<SessionSnapshot> recoverySnapshot;
     std::optional<OwnershipJournal> recoveryJournal;
     QSet<QString> references{"foreign-reference"};
@@ -136,6 +174,9 @@ class FakeSystemOperations : public SystemOperations {
         return !failed;
     }
     bool interfaceAvailable(const SessionSnapshot &) override {
+        ++interfaceChecks;
+        if (onInterfaceAvailable)
+            onInterfaceAvailable();
         return !failing("interface-available") && available;
     }
     bool retainRecovery(const SessionSnapshot &snapshot, const OwnershipJournal &journal) override {
@@ -790,6 +831,183 @@ class M4NetworkTests : public QObject {
             QCOMPARE(fake.calls.size(), calls);
             QVERIFY(!dispatcher.ready());
         }
+    }
+
+    void helperWatchdogUsesFakeClockAndStopsAfterCleanup() {
+        FakeSystemOperations fake;
+        qint64 nowMs = 100;
+        HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                    [&] { return nowMs; });
+        auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+        auto *timerPtr = timer.get();
+        HelperWatchdog watchdog(dispatcher, std::move(timer), 125);
+        QVERIFY(!watchdog.isRunning());
+        QCOMPARE(timerPtr->starts(), 0);
+
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+        QVERIFY(watchdog.isRunning());
+        QCOMPARE(timerPtr->intervalMs(), 125);
+        QCOMPARE(timerPtr->starts(), 1);
+
+        nowMs = 4000;
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Heartbeat, nowMs)));
+        const int cleanupCallsBeforeHeartbeatTick = fake.calls.count("end-arp");
+        timerPtr->fire();
+        QCOMPARE(dispatcher.state(), NetworkSession::State::Active);
+        QVERIFY(watchdog.isRunning());
+        QCOMPARE(fake.calls.count("end-arp"), cleanupCallsBeforeHeartbeatTick);
+
+        nowMs = 9000; // Five seconds after the accepted heartbeat.
+        timerPtr->fire();
+        QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+        QVERIFY(dispatcher.journal().empty());
+        QVERIFY(!watchdog.isRunning());
+        QVERIFY(timerPtr->stops() >= 1);
+        QVERIFY(!dispatcher.ready());
+    }
+
+    void helperWatchdogInterfaceLossAndPendingCleanupStopTimer() {
+        {
+            FakeSystemOperations fake;
+            qint64 nowMs = 100;
+            HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                        [&] { return nowMs; });
+            auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+            auto *timerPtr = timer.get();
+            HelperWatchdog watchdog(dispatcher, std::move(timer));
+            QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+            fake.available = false;
+            nowMs = 101;
+            timerPtr->fire();
+            QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+            QVERIFY(dispatcher.journal().empty());
+            QVERIFY(!watchdog.isRunning());
+            QVERIFY(fake.calls.contains("end-arp"));
+        }
+        {
+            FakeSystemOperations fake;
+            qint64 nowMs = 100;
+            HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                        [&] { return nowMs; });
+            auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+            auto *timerPtr = timer.get();
+            HelperWatchdog watchdog(dispatcher, std::move(timer));
+            QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+            fake.failure = "end-arp";
+            nowMs = 5100;
+            timerPtr->fire();
+            QCOMPARE(dispatcher.state(), NetworkSession::State::CleanupPending);
+            QVERIFY(!dispatcher.journal().empty());
+            QVERIFY(!watchdog.isRunning());
+            QCOMPARE(timerPtr->starts(), 1);
+        }
+    }
+
+    void helperWatchdogTickIsReentrancyGuardedAndOwnerThreadBound() {
+        FakeSystemOperations fake;
+        qint64 nowMs = 100;
+        HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                    [&] { return nowMs; });
+        auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+        auto *timerPtr = timer.get();
+        HelperWatchdog watchdog(dispatcher, std::move(timer));
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+
+        int nestedChecks = 0;
+        fake.onInterfaceAvailable = [&] {
+            QCOMPARE(QThread::currentThread(), watchdog.thread());
+            if (++nestedChecks == 1)
+                timerPtr->fire(); // Must be ignored while the outer tick is in progress.
+        };
+        const int before = fake.interfaceChecks;
+        timerPtr->fire();
+        QCOMPARE(fake.interfaceChecks, before + 1);
+        QCOMPARE(nestedChecks, 1);
+        QCOMPARE(dispatcher.state(), NetworkSession::State::Active);
+        QVERIFY(watchdog.isRunning());
+    }
+
+    void helperWatchdogStopsOnManualStopAndInvalidInterval() {
+        FakeSystemOperations fake;
+        qint64 nowMs = 100;
+        HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                    [&] { return nowMs; });
+        auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+        auto *timerPtr = timer.get();
+        HelperWatchdog watchdog(dispatcher, std::move(timer), 0);
+        QVERIFY(!watchdog.isRunning());
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+        QVERIFY(watchdog.isRunning());
+        QCOMPARE(timerPtr->intervalMs(), HelperWatchdog::defaultIntervalMs);
+        QCOMPARE(timerPtr->starts(), 1);
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Stop, nowMs + 1)));
+        QVERIFY(!watchdog.isRunning());
+        QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+    }
+
+    void helperWatchdogFailsClosedOnMissingOrRegressedClock() {
+        {
+            FakeSystemOperations fake;
+            HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability());
+            auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+            auto *timerPtr = timer.get();
+            HelperWatchdog watchdog(dispatcher, std::move(timer));
+            QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, 100)));
+            timerPtr->fire();
+            QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+            QVERIFY(dispatcher.journal().empty());
+            QVERIFY(!watchdog.isRunning());
+        }
+        {
+            FakeSystemOperations fake;
+            qint64 nowMs = 99;
+            HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                        [&] { return nowMs; });
+            auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+            auto *timerPtr = timer.get();
+            HelperWatchdog watchdog(dispatcher, std::move(timer));
+            QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, 100)));
+            timerPtr->fire();
+            QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+            QVERIFY(dispatcher.journal().empty());
+            QVERIFY(!watchdog.isRunning());
+        }
+    }
+
+    void helperWatchdogFailsClosedWhenClockThrows() {
+        FakeSystemOperations fake;
+        bool throwOnRead = false;
+        HelperDispatcher dispatcher(fake, validSnapshot(), trustedPeer(), capability(), nullptr,
+                                    [&]() -> qint64 {
+                                        if (throwOnRead)
+                                            throw std::runtime_error("synthetic clock failure");
+                                        return 100;
+                                    });
+        auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+        auto *timerPtr = timer.get();
+        HelperWatchdog watchdog(dispatcher, std::move(timer));
+        QVERIFY(dispatcher.dispatch(trustedPeer(), command(HelperCommand::Type::Start, 100)));
+        throwOnRead = true;
+        timerPtr->fire();
+        QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
+        QVERIFY(dispatcher.journal().empty());
+        QVERIFY(!watchdog.isRunning());
+    }
+
+    void helperWatchdogStopsWhenDispatcherIsDestroyed() {
+        FakeSystemOperations fake;
+        qint64 nowMs = 100;
+        auto timer = std::make_unique<FakeHelperWatchdogTimer>();
+        auto *timerPtr = timer.get();
+        auto *dispatcher = new HelperDispatcher(fake, validSnapshot(), trustedPeer(), capability(),
+                                                nullptr, [&] { return nowMs; });
+        auto watchdog = std::make_unique<HelperWatchdog>(*dispatcher, std::move(timer));
+        QVERIFY(dispatcher->dispatch(trustedPeer(), command(HelperCommand::Type::Start, nowMs)));
+        QVERIFY(watchdog->isRunning());
+        delete dispatcher;
+        QVERIFY(!watchdog->isRunning());
+        QVERIFY(!timerPtr->isActive());
+        watchdog.reset();
     }
 };
 

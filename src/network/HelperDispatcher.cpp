@@ -21,14 +21,29 @@ bool sameSnapshot(const SessionSnapshot &first, const SessionSnapshot &second) {
 } // namespace
 HelperDispatcher::HelperDispatcher(SystemOperations &operations, const SessionSnapshot &permitted,
                                    const VerifiedPeer &trusted, QByteArray capability,
-                                   QObject *parent)
+                                   QObject *parent, MonotonicClock monotonicClock)
     : QObject(parent), permitted_(permitted), trusted_(trusted), capability_(std::move(capability)),
-      session_(operations, this) {}
+      session_(operations, this), monotonicClock_(std::move(monotonicClock)) {
+    connect(&session_, &NetworkSession::stateChanged, this, &HelperDispatcher::stateChanged);
+}
 bool HelperDispatcher::ready() const {
     Q_ASSERT(QThread::currentThread() == thread());
     return !terminal_ && trusted_.transportAuthenticated && !trusted_.auditIdentity.isEmpty() &&
            trusted_.auditIdentity.size() <= 256 && capability_.size() >= 32 &&
            capability_.size() <= 128;
+}
+std::optional<qint64> HelperDispatcher::trustedMonotonicNowMs() const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!monotonicClock_)
+        return std::nullopt;
+    try {
+        const auto nowMs = monotonicClock_();
+        if (nowMs < 0)
+            return std::nullopt;
+        return nowMs;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 bool HelperDispatcher::dispatch(const VerifiedPeer &peer, const HelperCommand &command) {
     Q_ASSERT(QThread::currentThread() == thread());
@@ -74,6 +89,27 @@ bool HelperDispatcher::dispatch(const VerifiedPeer &peer, const HelperCommand &c
         }
     }
     return false;
+}
+bool HelperDispatcher::scheduledWatchdogTick() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (terminal_ || session_.state() != NetworkSession::State::Active)
+        return false;
+    if (!monotonicClock_) {
+        session_.checkWatchdog(-1);
+        revokeIfCleaned();
+        return false;
+    }
+    const auto clockValue = trustedMonotonicNowMs();
+    if (!clockValue || *clockValue < lastTimeMs_) {
+        session_.checkWatchdog(-1);
+        revokeIfCleaned();
+        return false;
+    }
+    const auto nowMs = *clockValue;
+    lastTimeMs_ = nowMs;
+    const auto result = session_.checkWatchdog(nowMs);
+    revokeIfCleaned();
+    return result;
 }
 void HelperDispatcher::revokeIfCleaned() {
     if (session_.state() == NetworkSession::State::Idle) {

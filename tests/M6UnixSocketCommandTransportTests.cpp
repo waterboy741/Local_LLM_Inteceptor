@@ -156,8 +156,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
             offset += static_cast<qsizetype>(count);
         }
     }
-    static bool request(HelperDispatcher &dispatcher, const QByteArray &wire,
-                        const std::function<qint64()> &clock, QByteArray *response,
+    static bool request(HelperDispatcher &dispatcher, const QByteArray &wire, QByteArray *response,
                         QString *error = nullptr) {
         int sockets[2] = {-1, -1};
         if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
@@ -165,7 +164,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
         writeAll(sockets[1], wire);
         if (::shutdown(sockets[1], SHUT_WR) != 0)
             qFatal("Cannot half-close transport test socket");
-        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, clock, error);
+        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, error);
         response->clear();
         char reply = 0;
         if (::recv(sockets[1], &reply, sizeof(reply), MSG_DONTWAIT) == 1)
@@ -189,15 +188,15 @@ class M6UnixSocketCommandTransportTests : public QObject {
         TransportFakeOperations operations;
         const auto snapshot = validSnapshot();
         const auto peer = kernelPeer();
-        HelperDispatcher dispatcher(operations, snapshot, peer, capability());
-        QVERIFY(dispatcher.dispatch(peer, startCommand(snapshot)));
-        const int operationCount = operations.calls.size();
-        const auto anchor = snapshot.anchor().toUtf8();
         int clockCalls = 0;
         const auto clock = [&clockCalls] {
             ++clockCalls;
             return qint64(150);
         };
+        HelperDispatcher dispatcher(operations, snapshot, peer, capability(), nullptr, clock);
+        QVERIFY(dispatcher.dispatch(peer, startCommand(snapshot)));
+        const int operationCount = operations.calls.size();
+        const auto anchor = snapshot.anchor().toUtf8();
 
         QByteArray legacyTime = QByteArray::fromHex("0101") + QByteArray(8, '\0');
         legacyTime += static_cast<char>(capability().size());
@@ -227,7 +226,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
         for (const auto &[wire, replyExpected] : rejected) {
             QByteArray reply;
             QString error;
-            QVERIFY(!request(dispatcher, wire, clock, &reply, &error));
+            QVERIFY(!request(dispatcher, wire, &reply, &error));
             if (replyExpected)
                 QCOMPARE(reply, QByteArray(1, char(0)));
             else
@@ -243,7 +242,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
               payload(1, capability(), QByteArrayLiteral("llm_interceptor/other"))}) {
             QByteArray reply;
             QString error;
-            QVERIFY(!request(dispatcher, frame(body), clock, &reply, &error));
+            QVERIFY(!request(dispatcher, frame(body), &reply, &error));
             QCOMPARE(reply, QByteArray(1, char(0)));
             QVERIFY(error == QStringLiteral("command_rejected_by_dispatcher"));
             QCOMPARE(clockCalls, 1);
@@ -253,15 +252,13 @@ class M6UnixSocketCommandTransportTests : public QObject {
         }
 
         QByteArray reply;
-        QVERIFY(request(dispatcher, frame(payload(1, capability(), anchor)), clock, &reply));
+        QVERIFY(request(dispatcher, frame(payload(1, capability(), anchor)), &reply));
         QCOMPARE(reply, QByteArray(1, char(1)));
         QCOMPARE(clockCalls, 1);
         QCOMPARE(operations.calls.size(), operationCount);
         QCOMPARE(dispatcher.state(), NetworkSession::State::Active);
 
-        QVERIFY(request(
-            dispatcher, frame(payload(2, capability(), anchor)), [] { return qint64(200); },
-            &reply));
+        QVERIFY(request(dispatcher, frame(payload(2, capability(), anchor)), &reply));
         QCOMPARE(reply, QByteArray(1, char(1)));
         QVERIFY(operations.calls.size() > operationCount);
         QCOMPARE(dispatcher.state(), NetworkSession::State::Idle);
@@ -270,7 +267,12 @@ class M6UnixSocketCommandTransportTests : public QObject {
     void noEofAndSlowTrickleTimeOutBeforeDispatch() {
         TransportFakeOperations operations;
         const auto peer = kernelPeer();
-        HelperDispatcher dispatcher(operations, validSnapshot(), peer, capability());
+        int clockCalls = 0;
+        HelperDispatcher dispatcher(operations, validSnapshot(), peer, capability(), nullptr,
+                                    [&clockCalls] {
+                                        ++clockCalls;
+                                        return qint64(200);
+                                    });
         int sockets[2] = {-1, -1};
         QCOMPARE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
 #if defined(SO_NOSIGPIPE)
@@ -290,17 +292,10 @@ class M6UnixSocketCommandTransportTests : public QObject {
             }
         });
 
-        int clockCalls = 0;
         QString error;
         QElapsedTimer elapsed;
         elapsed.start();
-        const bool accepted = dispatchOneUnixSocketCommand(
-            sockets[0], dispatcher,
-            [&clockCalls] {
-                ++clockCalls;
-                return qint64(200);
-            },
-            &error);
+        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, &error);
         const qint64 durationMs = elapsed.elapsed();
         finished.store(true);
         writer.join();
@@ -319,7 +314,12 @@ class M6UnixSocketCommandTransportTests : public QObject {
     void completeFrameWithoutClientEofIsRejectedBeforeDispatch() {
         TransportFakeOperations operations;
         const auto peer = kernelPeer();
-        HelperDispatcher dispatcher(operations, validSnapshot(), peer, capability());
+        int clockCalls = 0;
+        HelperDispatcher dispatcher(operations, validSnapshot(), peer, capability(), nullptr,
+                                    [&clockCalls] {
+                                        ++clockCalls;
+                                        return qint64(200);
+                                    });
         int sockets[2] = {-1, -1};
         QCOMPARE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
         const auto anchor = validSnapshot().anchor().toUtf8();
@@ -332,17 +332,10 @@ class M6UnixSocketCommandTransportTests : public QObject {
                 ::shutdown(sockets[1], SHUT_WR);
         });
 
-        int clockCalls = 0;
         QString error;
         QElapsedTimer elapsed;
         elapsed.start();
-        const bool accepted = dispatchOneUnixSocketCommand(
-            sockets[0], dispatcher,
-            [&clockCalls] {
-                ++clockCalls;
-                return qint64(200);
-            },
-            &error);
+        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, &error);
         const qint64 durationMs = elapsed.elapsed();
         finished.store(true);
         holder.join();
@@ -365,7 +358,8 @@ class M6UnixSocketCommandTransportTests : public QObject {
         TransportFakeOperations operations;
         const auto snapshot = validSnapshot();
         const auto peer = kernelPeer();
-        HelperDispatcher dispatcher(operations, snapshot, peer, capability());
+        HelperDispatcher dispatcher(operations, snapshot, peer, capability(), nullptr,
+                                    [] { return qint64(200); });
         QVERIFY(dispatcher.dispatch(peer, startCommand(snapshot)));
         const int operationCount = operations.calls.size();
 
@@ -376,8 +370,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
         QCOMPARE(::shutdown(sockets[1], SHUT_RD), 0);
 
         QString error;
-        const bool accepted = dispatchOneUnixSocketCommand(
-            sockets[0], dispatcher, [] { return qint64(200); }, &error);
+        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, &error);
 
         QVERIFY(!accepted);
         QCOMPARE(error, QStringLiteral("command_may_have_applied_response_failed"));
@@ -396,13 +389,7 @@ class M6UnixSocketCommandTransportTests : public QObject {
 
         int clockCalls = 0;
         QString error;
-        const bool accepted = dispatchOneUnixSocketCommand(
-            sockets[0], dispatcher,
-            [&clockCalls] {
-                ++clockCalls;
-                return qint64(200);
-            },
-            &error);
+        const bool accepted = dispatchOneUnixSocketCommand(sockets[0], dispatcher, &error);
 
         QVERIFY(!accepted);
         QVERIFY(!error.isEmpty());
