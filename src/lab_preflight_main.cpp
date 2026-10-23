@@ -1,6 +1,7 @@
 #include "core/SessionConfig.hpp"
 #include "network/LabPreflight.hpp"
 #include "network/PfDiagnostics.hpp"
+#include "network/RouteNeighborDiagnostics.hpp"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -18,9 +19,8 @@ int main(int argc, char **argv) {
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        "Opt-in M6 diagnostics. Endpoint mode initiates one TCP handshake. PF mode reads "
-        "read-only ruleset and state diagnostics. Neither mode changes local network "
-        "configuration.");
+        "Opt-in M6 diagnostics. Endpoint mode initiates one TCP handshake. Route/neighbor and "
+        "PF modes perform read-only inspection. No mode changes local network configuration.");
     parser.addHelpOption();
     parser.addVersionOption();
     const auto interfaceOption =
@@ -39,25 +39,37 @@ int main(int argc, char **argv) {
     const auto pfDiagnosticsOption = QCommandLineOption(
         "pf-diagnostics",
         "Explicitly inspect read-only PF status, anchors, rules, and state candidates.");
+    const auto routeNeighborOption = QCommandLineOption(
+        "route-neighbor-diagnostics",
+        "Explicitly inspect read-only routes and neighbor-table entries for client/server.");
     const auto sessionIdOption =
         QCommandLineOption("session-id", "M4 session identifier for the scoped PF anchor.", "id");
     const auto pfTimeoutOption = QCommandLineOption(
         "pf-timeout-ms", "Timeout per PF query in milliseconds (1–5000; default 3000).", "ms",
         QString::number(PfDiagnostics::defaultTimeoutMs));
+    const auto networkTimeoutOption = QCommandLineOption(
+        "network-timeout-ms", "Timeout per route/neighbor query (1–5000; default 1500).", "ms",
+        QString::number(RouteNeighborDiagnostics::defaultTimeoutMs));
     parser.addOptions({interfaceOption, clientOption, serverOption, portOption, timeoutOption,
-                       evidenceOption, pfDiagnosticsOption, sessionIdOption, pfTimeoutOption});
+                       evidenceOption, pfDiagnosticsOption, routeNeighborOption, sessionIdOption,
+                       pfTimeoutOption, networkTimeoutOption});
     parser.process(app);
 
-    for (const auto &option : {interfaceOption, clientOption, serverOption, portOption}) {
+    for (const auto &option : {interfaceOption, clientOption, serverOption}) {
         if (!parser.isSet(option)) {
             QTextStream(stderr) << "Missing required option: --" << option.names().front() << '\n';
             return 2;
         }
     }
+    if (!parser.isSet(portOption) && !parser.isSet(routeNeighborOption)) {
+        QTextStream(stderr) << "Missing required option: --" << portOption.names().front() << '\n';
+        return 2;
+    }
 
-    bool portOk = false;
+    bool portOk = true;
     bool timeoutOk = false;
-    const int port = parser.value(portOption).toInt(&portOk);
+    const int port = parser.isSet(portOption) ? parser.value(portOption).toInt(&portOk)
+                                              : SessionConfig{}.serverPort;
     const int timeoutMs = parser.value(timeoutOption).toInt(&timeoutOk);
     SessionConfig config;
     config.interfaceName = parser.value(interfaceOption);
@@ -67,6 +79,33 @@ int main(int argc, char **argv) {
     if (!portOk || !timeoutOk) {
         QTextStream(stderr) << "Port and timeout must be decimal integers.\n";
         return 2;
+    }
+
+    if (parser.isSet(pfDiagnosticsOption) && parser.isSet(routeNeighborOption)) {
+        QTextStream(stderr) << "Select either PF or route/neighbor diagnostics.\n";
+        return 2;
+    }
+
+    if (parser.isSet(routeNeighborOption)) {
+        bool networkTimeoutOk = false;
+        const int networkTimeoutMs = parser.value(networkTimeoutOption).toInt(&networkTimeoutOk);
+        if (!networkTimeoutOk) {
+            QTextStream(stderr) << "Network timeout must be a decimal integer.\n";
+            return 2;
+        }
+        const auto result = RouteNeighborDiagnostics::collect(config, systemNetworkCommandRunner(),
+                                                              networkTimeoutMs);
+        const auto json = QJsonDocument(result.toSanitizedJson()).toJson(QJsonDocument::Indented);
+        if (parser.isSet(evidenceOption)) {
+            QSaveFile file(parser.value(evidenceOption));
+            if (!file.open(QIODevice::WriteOnly) || file.write(json) != json.size() ||
+                !file.commit()) {
+                QTextStream(stderr) << "Could not write the evidence file.\n";
+                return 2;
+            }
+        }
+        QTextStream(stdout) << json;
+        return result.complete ? 0 : 1;
     }
 
     if (parser.isSet(pfDiagnosticsOption)) {

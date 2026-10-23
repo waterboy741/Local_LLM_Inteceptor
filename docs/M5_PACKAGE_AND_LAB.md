@@ -38,6 +38,23 @@ Build the debug target, then invoke it only when the lab and its authorized endp
 
 The process prints the same JSON it optionally writes with `--evidence`; exit status 0 means the checks completed and TCP connected, 1 means a check failed, and 2 means arguments or evidence-file writing failed. The schema records UTC time, configured-field presence, check outcomes, timeout, and a stable status code. It omits the supplied interface name, addresses, MACs, credentials, packet contents, and prompts. Keep the actual configuration in the lab's separately controlled evidence notes. TCP outcomes are `reachable`, `refused`, `timed_out`, `error`, or `not_checked`; timeout accepts 1–5000 ms and defaults to 1500 ms.
 
+### Explicitly enabled route and neighbor inspection
+
+`--route-neighbor-diagnostics` runs four fixed read-only queries: the OS route to each configured peer, then the selected-interface ARP cache lookup for each peer. On macOS these use `/sbin/route -n get <address>` and `/usr/sbin/arp -i <interface> -n <address>` as separate processes, with no shell, elevation, route changes, or ARP sends. Each query has a 1–5000 ms timeout (default 1500 ms) and a 32 KiB combined output limit. The JSON reports only whether output was recognized, whether the route/neighbor interface matches the selected interface, whether the route explicitly reports a direct `link#` gateway, and whether the neighbor row contains a valid unicast MAC. A route output without a gateway is recognized with directness unknown. It omits addresses, gateways, MACs, and raw command output. An `(incomplete)` ARP row or recognized `no entry` result is an unresolved neighbor. Cache entries can be stale; these queries do not refresh them. A completed report may still show interface mismatch, a routed path, or unresolved peers; `complete` means all four command observations were collected and recognized, not that connectivity succeeded.
+
+These are snapshots of the OS route table and neighbor cache. They do not prove that packets egressed on the selected interface, that client and server share layer 2, that Wi-Fi accepts ARP redirection, or that PF/interception works. The mode does not trigger resolution or send test traffic. Example:
+
+```sh
+./build/debug/lab_preflight \
+  --route-neighbor-diagnostics \
+  --interface "$RESEARCH_INTERFACE" \
+  --client-ip "$CLIENT_IPV4" \
+  --server-ip "$SERVER_IPV4" \
+  --server-port "$SERVER_TCP_PORT" \
+  --network-timeout-ms 1500 \
+  --evidence route-neighbors.json
+```
+
 ### Explicitly enabled PF diagnostics (M6 preparation only)
 
 `lab_preflight --pf-diagnostics` is a separate opt-in read-only inspection mode. It requires the same explicit interface/client/server/port values plus `--session-id`, and issues only fixed, allowlisted `/sbin/pfctl` show queries: PF status, main filter and translation rules, the application/session anchor tree, rules and counters scoped to that session anchor, and the state table. It never loads or flushes rules, enables PF, releases a PF reference, changes ARP, or invokes `sudo`. PF inspection may require administrator privileges; a permission failure is recorded as unavailable, with no retry or elevation attempt.
