@@ -55,6 +55,11 @@ target_link_libraries(m6_route_neighbor_diagnostics_tests PRIVATE interceptor_ne
 add_test(NAME m6_route_neighbor_diagnostics COMMAND m6_route_neighbor_diagnostics_tests)
 set_tests_properties(m6_route_neighbor_diagnostics PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_pf_anchor_operations_tests M6PfAnchorOperationsTests.cpp)
+target_link_libraries(m6_pf_anchor_operations_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_pf_anchor_operations COMMAND m6_pf_anchor_operations_tests)
+set_tests_properties(m6_pf_anchor_operations PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_unix_peer_credentials_tests M6UnixPeerCredentialsTests.cpp)
 target_link_libraries(m6_unix_peer_credentials_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_unix_peer_credentials COMMAND m6_unix_peer_credentials_tests)
