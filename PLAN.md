@@ -198,6 +198,8 @@ M6 helper groundwork (October 19, 2026): a bounded one-request Unix-socket trans
 
 Remote-device explicit-proxy check (October 19, 2026): the user manually verified that a live request from another device reaches the proxy and upstream LLM after configuring that client to use the research Mac's displayed LAN listener URL. Debug, release, and sanitizer suites passed locally, and the push workflow for `ceb7030` succeeded. This confirms the reported explicit-proxy path only; unchanged-server-address transparent redirection and the remaining M6 acceptance checks are still open.
 
+Read-only interface-facts preflight (October 22, 2026): the selected interface reported an active usable IPv4/prefix and unicast MAC, and both configured peers fell within one selected-interface subnet. A source-address-bound TCP connection to the configured Ollama endpoint timed out on this run, so current endpoint reachability was not established. The sanitized v2 record is retained only in ignored local build evidence. Subnet membership does not prove shared L2, Wi-Fi/ARP delivery, PF evaluation, or transparent redirection.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review

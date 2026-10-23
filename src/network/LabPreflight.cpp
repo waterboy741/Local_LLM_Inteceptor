@@ -4,52 +4,49 @@
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QNetworkInterface>
+#include <QRegularExpression>
 #include <QTcpSocket>
+
+#include <algorithm>
 
 namespace interceptor {
 namespace {
 class SystemLabProbe final : public LabProbe {
   public:
-    bool interfaceExists(const QString &name) override {
-        return QNetworkInterface::interfaceFromName(name).isValid();
-    }
-
-    bool interfaceUp(const QString &name) override {
-        const auto interface = QNetworkInterface::interfaceFromName(name);
-        return interface.isValid() && interface.flags().testFlag(QNetworkInterface::IsUp) &&
-               interface.flags().testFlag(QNetworkInterface::IsRunning);
-    }
-
-    QStringList interfaceIPv4Addresses(const QString &name) override {
-        QStringList addresses;
+    InterfaceFacts interfaceFacts(const QString &name) override {
+        InterfaceFacts facts;
         const auto interface = QNetworkInterface::interfaceFromName(name);
         if (!interface.isValid())
-            return addresses;
+            return facts;
+        facts.found = true;
+        facts.up = interface.flags().testFlag(QNetworkInterface::IsUp) &&
+                   interface.flags().testFlag(QNetworkInterface::IsRunning);
+        facts.macAddress = interface.hardwareAddress();
         for (const auto &entry : interface.addressEntries()) {
             const auto address = entry.ip();
-            if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isLoopback() &&
-                !address.isLinkLocal())
-                addresses << address.toString();
+            if (address.protocol() == QAbstractSocket::IPv4Protocol)
+                facts.ipv4Addresses.append({address.toString(), entry.prefixLength()});
         }
-        return addresses;
+        return facts;
     }
 
-    TcpProbeResult connectTcp(const QString &interfaceName, const QString &serverIp, int serverPort,
-                              int timeoutMs) override {
+    TcpProbeResult connectTcp(const QString &interfaceName, const QString &sourceIpv4,
+                              const QString &serverIp, int serverPort, int timeoutMs) override {
         QHostAddress destination;
-        if (!destination.setAddress(serverIp))
+        QHostAddress source;
+        if (!destination.setAddress(serverIp) || !source.setAddress(sourceIpv4))
             return TcpProbeResult::Error;
 
-        const auto addresses = interfaceIPv4Addresses(interfaceName);
-        if (addresses.isEmpty())
-            return TcpProbeResult::Error;
-
-        QHostAddress localAddress;
-        if (!localAddress.setAddress(addresses.front()))
+        const auto currentFacts = interfaceFacts(interfaceName);
+        if (!currentFacts.found || !currentFacts.up ||
+            std::none_of(currentFacts.ipv4Addresses.cbegin(), currentFacts.ipv4Addresses.cend(),
+                         [&sourceIpv4](const InterfaceAddressFact &fact) {
+                             return fact.ipv4 == sourceIpv4;
+                         }))
             return TcpProbeResult::Error;
 
         QTcpSocket socket;
-        if (!socket.bind(localAddress, 0, QAbstractSocket::DefaultForPlatform))
+        if (!socket.bind(source, 0, QAbstractSocket::DefaultForPlatform))
             return TcpProbeResult::Error;
         socket.connectToHost(destination, static_cast<quint16>(serverPort));
         if (socket.waitForConnected(timeoutMs)) {
@@ -64,6 +61,47 @@ class SystemLabProbe final : public LabProbe {
         return TcpProbeResult::Error;
     }
 };
+
+bool isUsableMac(const QString &mac) {
+    static const QRegularExpression pattern(QStringLiteral("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$"));
+    if (!pattern.match(mac).hasMatch())
+        return false;
+    const auto firstOctet = mac.left(2).toUInt(nullptr, 16);
+    QString normalized = mac;
+    normalized.remove(QLatin1Char(':'));
+    normalized = normalized.toLower();
+    return (firstOctet & 1U) == 0U && normalized != QStringLiteral("000000000000");
+}
+
+bool usableUnicastIpv4(const QHostAddress &address) {
+    const auto value = address.toIPv4Address();
+    const auto firstOctet = value >> 24;
+    return address.protocol() == QAbstractSocket::IPv4Protocol && value != 0 &&
+           value != 0xffffffffU && firstOctet > 0 && firstOctet < 224 && !address.isLoopback() &&
+           !address.isLinkLocal();
+}
+
+bool sameSubnet(const QHostAddress &left, const QHostAddress &right, int prefixLength) {
+    const quint32 mask = 0xffffffffU << (32 - prefixLength);
+    return (left.toIPv4Address() & mask) == (right.toIPv4Address() & mask);
+}
+
+bool isSubnetHostAddress(const QHostAddress &address, int prefixLength) {
+    const quint32 mask = 0xffffffffU << (32 - prefixLength);
+    const auto value = address.toIPv4Address();
+    const auto network = value & mask;
+    return value != network && value != (network | ~mask);
+}
+
+bool peerIsHostOnSubnet(const QHostAddress &peer, const QHostAddress &local, int prefixLength) {
+    if (!usableUnicastIpv4(peer) || !sameSubnet(peer, local, prefixLength))
+        return false;
+    const quint32 mask = 0xffffffffU << (32 - prefixLength);
+    const auto peerValue = peer.toIPv4Address();
+    const auto network = local.toIPv4Address() & mask;
+    const auto broadcast = network | ~mask;
+    return peerValue != network && peerValue != broadcast;
+}
 
 QString tcpCode(TcpProbeResult result) {
     switch (result) {
@@ -94,12 +132,19 @@ QJsonObject LabPreflightResult::toSanitizedJson() const {
     checks.insert("interface_found", interfaceFound);
     checks.insert("interface_up", interfaceUp);
     checks.insert("interface_has_usable_ipv4", interfaceHasUsableIPv4);
+    checks.insert("interface_has_valid_mac", interfaceHasValidMac);
+    checks.insert("client_on_selected_subnet", clientOnSelectedSubnet);
+    checks.insert("server_on_selected_subnet", serverOnSelectedSubnet);
+    checks.insert("source_address_selected", sourceAddressSelected);
     checks.insert("server_tcp", tcpStatus);
-    return {{"schema", "llm-interceptor.lab-preflight.v1"},
+    return {{"schema", "llm-interceptor.lab-preflight.v2"},
             {"recorded_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
             {"sanitized", true},
             {"configured", configured},
-            {"tcp_probe_scope", "source_address_bound_tcp_reachability"},
+            {"interface_fact_scope", "selected_interface_ip_prefix_mac_and_subnet_membership"},
+            {"tcp_probe_scope", "source_address_bound_tcp_reachability_not_interface_egress_proof"},
+            {"layer2_arp_compatibility_proven", false},
+            {"proxy_readiness_proven", false},
             {"checks", checks},
             {"timeout_ms", timeoutMs},
             {"complete", complete},
@@ -122,23 +167,67 @@ LabPreflightResult LabPreflight::run(const SessionConfig &config, LabProbe &prob
         return result;
     }
     result.configValid = true;
-    result.interfaceFound = probe.interfaceExists(config.interfaceName);
+    const auto facts = probe.interfaceFacts(config.interfaceName);
+    result.interfaceFound = facts.found;
     if (!result.interfaceFound) {
         result.statusCode = "interface_missing";
         return result;
     }
-    result.interfaceUp = probe.interfaceUp(config.interfaceName);
+    result.interfaceUp = facts.up;
     if (!result.interfaceUp) {
         result.statusCode = "interface_down";
         return result;
     }
-    result.interfaceHasUsableIPv4 = !probe.interfaceIPv4Addresses(config.interfaceName).isEmpty();
+    QHostAddress clientAddress;
+    QHostAddress serverAddress;
+    clientAddress.setAddress(config.clientIp);
+    serverAddress.setAddress(config.serverIp);
+    result.interfaceHasValidMac = isUsableMac(facts.macAddress);
+    bool invalidAddressFact = false;
+    QString selectedSourceAddress;
+    for (const auto &addressFact : facts.ipv4Addresses) {
+        QHostAddress localAddress;
+        if (!localAddress.setAddress(addressFact.ipv4) || addressFact.prefixLength < 1 ||
+            addressFact.prefixLength > 30) {
+            invalidAddressFact = true;
+            continue;
+        }
+        if (!usableUnicastIpv4(localAddress))
+            continue;
+        if (!isSubnetHostAddress(localAddress, addressFact.prefixLength)) {
+            invalidAddressFact = true;
+            continue;
+        }
+        result.interfaceHasUsableIPv4 = true;
+        const bool clientMatches =
+            peerIsHostOnSubnet(clientAddress, localAddress, addressFact.prefixLength);
+        const bool serverMatches =
+            peerIsHostOnSubnet(serverAddress, localAddress, addressFact.prefixLength);
+        result.clientOnSelectedSubnet = result.clientOnSelectedSubnet || clientMatches;
+        result.serverOnSelectedSubnet = result.serverOnSelectedSubnet || serverMatches;
+        if (clientMatches && serverMatches && selectedSourceAddress.isEmpty()) {
+            selectedSourceAddress = addressFact.ipv4;
+        }
+    }
+    if (invalidAddressFact) {
+        result.statusCode = "invalid_interface_facts";
+        return result;
+    }
     if (!result.interfaceHasUsableIPv4) {
         result.statusCode = "interface_no_ipv4";
         return result;
     }
-    const auto tcp =
-        probe.connectTcp(config.interfaceName, config.serverIp, config.serverPort, timeoutMs);
+    if (!result.interfaceHasValidMac) {
+        result.statusCode = "interface_no_mac";
+        return result;
+    }
+    if (selectedSourceAddress.isEmpty()) {
+        result.statusCode = "no_common_subnet";
+        return result;
+    }
+    result.sourceAddressSelected = true;
+    const auto tcp = probe.connectTcp(config.interfaceName, selectedSourceAddress, config.serverIp,
+                                      config.serverPort, timeoutMs);
     result.tcpStatus = tcpCode(tcp);
     result.serverTcpReachable = tcp == TcpProbeResult::Reachable;
     result.complete = result.serverTcpReachable;

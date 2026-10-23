@@ -9,14 +9,24 @@ namespace interceptor {
 
 enum class TcpProbeResult { Reachable, Refused, TimedOut, Error };
 
+struct InterfaceAddressFact {
+    QString ipv4;
+    int prefixLength = 0;
+};
+
+struct InterfaceFacts {
+    bool found = false;
+    bool up = false;
+    QString macAddress;
+    QList<InterfaceAddressFact> ipv4Addresses;
+};
+
 class LabProbe {
   public:
     virtual ~LabProbe() = default;
-    virtual bool interfaceExists(const QString &name) = 0;
-    virtual bool interfaceUp(const QString &name) = 0;
-    virtual QStringList interfaceIPv4Addresses(const QString &name) = 0;
-    virtual TcpProbeResult connectTcp(const QString &interfaceName, const QString &serverIp,
-                                      int serverPort, int timeoutMs) = 0;
+    virtual InterfaceFacts interfaceFacts(const QString &name) = 0;
+    virtual TcpProbeResult connectTcp(const QString &interfaceName, const QString &sourceIpv4,
+                                      const QString &serverIp, int serverPort, int timeoutMs) = 0;
 };
 
 struct LabPreflightResult {
@@ -24,6 +34,10 @@ struct LabPreflightResult {
     bool interfaceFound = false;
     bool interfaceUp = false;
     bool interfaceHasUsableIPv4 = false;
+    bool interfaceHasValidMac = false;
+    bool clientOnSelectedSubnet = false;
+    bool serverOnSelectedSubnet = false;
+    bool sourceAddressSelected = false;
     bool serverTcpReachable = false;
     bool complete = false;
     int timeoutMs = 0;
