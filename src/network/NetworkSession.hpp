@@ -19,6 +19,7 @@ class SessionSnapshot {
     const SessionConfig &config() const { return config_; }
     const NetworkFacts &facts() const { return facts_; }
     int proxyPort() const { return proxyPort_; }
+    const QString &sessionId() const { return sessionId_; }
     QString anchor() const { return "llm_interceptor/" + sessionId_; }
     QString pfRules() const;
     QList<QByteArray> redirectionFrames() const;
