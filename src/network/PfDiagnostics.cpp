@@ -86,20 +86,38 @@ class SystemPfCommandRunner final : public PfCommandRunner {
         process.start();
 
         PfQueryOutput result;
-        if (!process.waitForStarted(timeoutMs))
+        if (!process.waitForStarted(timeoutMs)) {
+            const bool startupTimedOut = timer.elapsed() >= timeoutMs;
+            if (process.state() != QProcess::NotRunning) {
+                process.kill();
+                if (!process.waitForFinished(1000) && process.state() != QProcess::NotRunning)
+                    result.status = PfCommandStatus::TimedOut;
+            }
+            if (startupTimedOut)
+                result.status = PfCommandStatus::TimedOut;
             return result;
+        }
 
         QByteArray permissionText;
         qsizetype observedBytes = 0;
         bool overflow = false;
         bool timedOut = false;
         auto drain = [&]() {
-            const auto stdoutChunk = process.readAllStandardOutput();
-            const auto stderrChunk = process.readAllStandardError();
-            observedBytes += stdoutChunk.size() + stderrChunk.size();
+            const auto remaining = outputLimitBytes - observedBytes;
+            const auto stdoutChunk = process.read(remaining + 1);
+            if (stdoutChunk.size() > remaining) {
+                overflow = true;
+                process.kill();
+                return;
+            }
+            process.setReadChannel(QProcess::StandardError);
+            const auto stderrChunk = process.read(remaining - stdoutChunk.size() + 1);
+            process.setReadChannel(QProcess::StandardOutput);
+            const auto newlyObserved = stdoutChunk.size() + stderrChunk.size();
+            observedBytes += newlyObserved;
             if (permissionText.size() < 4096)
                 permissionText += stderrChunk.left(4096 - permissionText.size());
-            if (observedBytes > outputLimitBytes) {
+            if (newlyObserved > remaining) {
                 overflow = true;
                 process.kill();
             } else {
@@ -119,9 +137,10 @@ class SystemPfCommandRunner final : public PfCommandRunner {
             }
             process.waitForReadyRead(qMin(remaining, 100));
         }
-        if (process.state() != QProcess::NotRunning)
+        if (!overflow && process.state() != QProcess::NotRunning)
             process.waitForFinished(100);
-        drain();
+        if (!overflow)
+            drain();
 
         if (overflow) {
             result.status = PfCommandStatus::OutputLimitExceeded;
@@ -158,11 +177,18 @@ bool lineMentionsAttachment(const QByteArray &output, const QByteArray &kind,
 }
 
 bool parseEnabled(const QByteArray &output, bool *enabled) {
-    const QRegularExpression expression("^\\s*Status:\\s*(Enabled|Disabled)\\b",
-                                        QRegularExpression::CaseInsensitiveOption |
-                                            QRegularExpression::MultilineOption);
-    const auto match = expression.match(QString::fromUtf8(output));
-    if (!match.hasMatch())
+    if (QString::fromUtf8(output).toUtf8() != output)
+        return false;
+    const QRegularExpression expression(
+        "^\\s*Status:\\s*(Enabled|Disabled)(?:\\s+for\\s+\\d+\\s+days?\\s+"
+        "\\d{2}:\\d{2}:\\d{2})?\\s*$",
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
+    const auto text = QString::fromUtf8(output);
+    auto matches = expression.globalMatch(text);
+    if (!matches.hasNext())
+        return false;
+    const auto match = matches.next();
+    if (matches.hasNext())
         return false;
     *enabled = match.captured(1).compare("Enabled", Qt::CaseInsensitive) == 0;
     return true;
@@ -224,6 +250,60 @@ bool parseRuleListing(const QByteArray &output) {
     int ignoredCount = 0;
     bool ignoredCounters = false;
     return parseRules(output, &ignoredCount, &ignoredCounters);
+}
+
+bool validUtf8(const QByteArray &output) { return QString::fromUtf8(output).toUtf8() == output; }
+
+bool parseMainAttachmentRules(const QByteArray &output, const QByteArray &expectedKind,
+                              bool *referenced) {
+    *referenced = false;
+    if (!validUtf8(output) || !parseRuleListing(output))
+        return false;
+
+    static const QRegularExpression anchorDirective(
+        "^\\s*@\\d+\\s+(?:anchor|rdr-anchor|nat-anchor|binat-anchor|scrub-anchor)\\b",
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression wellFormedDirective(
+        "^\\s*@\\d+\\s+(?:anchor|rdr-anchor|nat-anchor|binat-anchor|scrub-anchor)\\s+"
+        "([\\\"'])[^\\\"'\\r\\n]+\\1(?:\\s+.*)?$",
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression indexedRule("^\\s*@\\d+\\s+(\\S+)");
+    static const QSet<QString> knownRuleKinds = {
+        "pass",       "block",        "match", "anchor",       "rdr-anchor",
+        "nat-anchor", "binat-anchor", "scrub", "scrub-anchor", "antispoof"};
+    static const QRegularExpression verboseCounter(
+        "^\\s*Evaluations:\\s*\\d+\\s+Packets:\\s*\\d+\\s+Bytes:\\s*\\d+\\s*$",
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression bracketedVerboseCounter(
+        "^\\s*\\[\\s*Evaluations:\\s*\\d+\\s+Packets:\\s*\\d+\\s+Bytes:\\s*\\d+"
+        "\\s*\\]\\s*$",
+        QRegularExpression::CaseInsensitiveOption);
+    const QString target = QString::fromLatin1(expectedKind) + "\\s+([\\\"'])" +
+                           QRegularExpression::escape(QStringLiteral("llm_interceptor/*")) +
+                           "\\1(?=\\s|$)";
+    const QRegularExpression expectedReference("^\\s*@\\d+\\s+" + target,
+                                               QRegularExpression::CaseInsensitiveOption);
+
+    const auto lines = QString::fromUtf8(output).split('\n');
+    int matchingReferences = 0;
+    for (const auto &line : lines) {
+        const auto trimmed = line.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        if (verboseCounter.match(line).hasMatch() || bracketedVerboseCounter.match(line).hasMatch())
+            continue;
+        const auto ruleMatch = indexedRule.match(line);
+        if (!ruleMatch.hasMatch() || !knownRuleKinds.contains(ruleMatch.captured(1).toLower()))
+            return false;
+        if (anchorDirective.match(line).hasMatch() && !wellFormedDirective.match(line).hasMatch())
+            return false;
+        if (expectedReference.match(line).hasMatch())
+            ++matchingReferences;
+    }
+    if (matchingReferences > 1)
+        return false;
+    *referenced = matchingReferences == 1;
+    return true;
 }
 
 bool parseStateCandidates(const QByteArray &output, const SessionConfig &config, int *count) {
@@ -314,6 +394,38 @@ QJsonObject PfDiagnosticsResult::toSanitizedJson() const {
             {"evaluation_proven", evaluationProven},
             {"queries", queryResults},
             {"validation_errors", errors}};
+}
+
+QJsonObject PfPreInstallReadinessResult::toSanitizedJson() const {
+    QJsonArray queryResults;
+    for (const auto &query : queries)
+        queryResults.append(
+            QJsonObject{{"query", queryName(query.query)}, {"status", query.status}});
+
+    QJsonObject pf;
+    pf.insert("known", pfEnabledKnown);
+    if (pfEnabledKnown)
+        pf.insert("enabled", pfEnabled);
+    QJsonObject filterAttachment;
+    filterAttachment.insert("known", filterAttachmentKnown);
+    if (filterAttachmentKnown)
+        filterAttachment.insert("referenced_from_main", filterAttachmentReferenced);
+    QJsonObject translationAttachment;
+    translationAttachment.insert("known", translationAttachmentKnown);
+    if (translationAttachmentKnown)
+        translationAttachment.insert("referenced_from_main", translationAttachmentReferenced);
+
+    return {{"schema", "llm-interceptor.pf-preinstall-readiness.v1"},
+            {"sanitized", true},
+            {"timeout_ms", timeoutMs},
+            {"ready", ready},
+            {"status", statusCode},
+            {"pf", pf},
+            {"filter_attachment", filterAttachment},
+            {"translation_attachment", translationAttachment},
+            {"references_observed_only", true},
+            {"packet_evaluation_proven", false},
+            {"queries", queryResults}};
 }
 
 PfDiagnosticsResult PfDiagnostics::collect(const SessionConfig &config, const QString &sessionId,
@@ -418,6 +530,82 @@ PfDiagnosticsResult PfDiagnostics::collect(const SessionConfig &config, const QS
     }
     result.complete = result.sessionRulesKnown && result.stateCandidatesKnown;
     result.statusCode = result.complete ? "diagnostics_complete" : "incomplete";
+    return result;
+}
+
+PfPreInstallReadinessResult PfDiagnostics::collectPreInstallReadiness(PfCommandRunner &runner,
+                                                                      int timeoutMs) {
+    PfPreInstallReadinessResult result;
+    result.timeoutMs = timeoutMs;
+    if (timeoutMs < 1 || timeoutMs > maximumTimeoutMs) {
+        result.statusCode = "invalid_timeout";
+        return result;
+    }
+
+    const QVector<PfQuery> order = {PfQuery::Status, PfQuery::MainFilterRules,
+                                    PfQuery::MainTranslationRules};
+    for (const auto query : order) {
+        const auto output = runner.query(query, {}, timeoutMs, maximumOutputBytes);
+        if (output.status != PfCommandStatus::Completed || output.exitCode != 0 ||
+            output.standardOutput.size() > maximumOutputBytes) {
+            QString failure;
+            if (output.status == PfCommandStatus::Completed) {
+                failure = output.standardOutput.size() > maximumOutputBytes
+                              ? "output_limit_exceeded"
+                              : "failed";
+            } else {
+                failure = commandStatusName(output.status);
+            }
+            result.queries.append({query, failure});
+            result.statusCode = failure;
+            return result;
+        }
+
+        bool parsed = false;
+        switch (query) {
+        case PfQuery::Status:
+            result.pfEnabledKnown = parseEnabled(output.standardOutput, &result.pfEnabled);
+            parsed = result.pfEnabledKnown;
+            break;
+        case PfQuery::MainFilterRules:
+            parsed = parseMainAttachmentRules(output.standardOutput, "anchor",
+                                              &result.filterAttachmentReferenced);
+            result.filterAttachmentKnown = parsed;
+            break;
+        case PfQuery::MainTranslationRules:
+            parsed = parseMainAttachmentRules(output.standardOutput, "rdr-anchor",
+                                              &result.translationAttachmentReferenced);
+            result.translationAttachmentKnown = parsed;
+            break;
+        case PfQuery::ApplicationAnchors:
+        case PfQuery::SessionFilterRules:
+        case PfQuery::SessionTranslationRules:
+        case PfQuery::States:
+            break;
+        }
+        if (!parsed) {
+            result.queries.append({query, "unrecognized_output"});
+            result.statusCode = "unrecognized_output";
+            return result;
+        }
+        result.queries.append({query, "completed"});
+
+        if (query == PfQuery::Status && !result.pfEnabled) {
+            result.statusCode = "pf_disabled";
+            return result;
+        }
+        if (query == PfQuery::MainFilterRules && !result.filterAttachmentReferenced) {
+            result.statusCode = "filter_attachment_missing";
+            return result;
+        }
+        if (query == PfQuery::MainTranslationRules && !result.translationAttachmentReferenced) {
+            result.statusCode = "translation_attachment_missing";
+            return result;
+        }
+    }
+
+    result.ready = true;
+    result.statusCode = "preinstall_ready";
     return result;
 }
 

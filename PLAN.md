@@ -208,6 +208,8 @@ Remote-device explicit-proxy check (October 19, 2026): the user manually verifie
 
 Read-only interface-facts preflight (October 22, 2026): the selected interface reported an active usable IPv4/prefix and unicast MAC, and both configured peers fell within one selected-interface subnet. A source-address-bound TCP connection to the configured Ollama endpoint timed out on this run, so current endpoint reachability was not established. The sanitized v2 record is retained only in ignored local build evidence. Subnet membership does not prove shared L2, Wi-Fi/ARP delivery, PF evaluation, or transparent redirection.
 
+M6 pre-install PF readiness groundwork (October 25, 2026): an offline read-only probe runs only fixed PF status, main filter-rule, and main translation-rule queries. It requires enabled PF and a uniquely recognized `anchor "llm_interceptor/*"` plus `rdr-anchor "llm_interceptor/*"` reference, stops on the first failed or unrecognized query, and returns sanitized status without raw output or session details. It is not wired into the GUI, CLI, or mutation adapter; tests use a fake runner. These textual references do not prove active packet evaluation, a loaded session anchor, or redirection.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review

@@ -69,6 +69,21 @@ struct PfDiagnosticsResult {
     QJsonObject toSanitizedJson() const;
 };
 
+struct PfPreInstallReadinessResult {
+    bool ready = false;
+    bool pfEnabledKnown = false;
+    bool pfEnabled = false;
+    bool filterAttachmentKnown = false;
+    bool filterAttachmentReferenced = false;
+    bool translationAttachmentKnown = false;
+    bool translationAttachmentReferenced = false;
+    int timeoutMs = 0;
+    QString statusCode;
+    QVector<PfQueryDiagnostic> queries;
+
+    QJsonObject toSanitizedJson() const;
+};
+
 class PfDiagnostics {
   public:
     static constexpr int defaultTimeoutMs = 3000;
@@ -77,6 +92,8 @@ class PfDiagnostics {
 
     static PfDiagnosticsResult collect(const SessionConfig &config, const QString &sessionId,
                                        PfCommandRunner &runner, int timeoutMs = defaultTimeoutMs);
+    static PfPreInstallReadinessResult collectPreInstallReadiness(PfCommandRunner &runner,
+                                                                  int timeoutMs = defaultTimeoutMs);
 };
 
 PfCommandRunner &systemPfCommandRunner();
