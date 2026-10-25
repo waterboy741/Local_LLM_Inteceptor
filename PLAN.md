@@ -210,6 +210,8 @@ Read-only interface-facts preflight (October 22, 2026): the selected interface r
 
 M6 pre-install PF readiness groundwork (October 25, 2026): an offline read-only probe runs only fixed PF status, main filter-rule, and main translation-rule queries. It requires enabled PF and a uniquely recognized `anchor "llm_interceptor/*"` plus `rdr-anchor "llm_interceptor/*"` reference, stops on the first failed or unrecognized query, and returns sanitized status without raw output or session details. It is not wired into the GUI, CLI, or mutation adapter; tests use a fake runner. These textual references do not prove active packet evaluation, a loaded session anchor, or redirection.
 
+M6 host-lease groundwork (October 25, 2026): an offline move-only `HostSessionLease` opens a fixed lock file relative to a trusted directory descriptor, rejects non-private directories, symlinks, non-regular files, unsafe ownership/modes, and multiply linked lock files, then acquires a nonblocking exclusive `flock`. RAII release closes the descriptor and never unlinks the file. This coordinates cooperating processes only if all instances use the same canonical directory inode; the future privileged helper must supply the same root-owned private directory and prevent descriptor leakage. No token issuance, authorization, recovery, or live backend integration is provided, and no network state is changed.
+
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 
 ## Validation and Milestone Review

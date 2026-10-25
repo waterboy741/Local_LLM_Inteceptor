@@ -74,3 +74,8 @@ qt_add_executable(m6_unix_socket_command_transport_tests M6UnixSocketCommandTran
 target_link_libraries(m6_unix_socket_command_transport_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_unix_socket_command_transport COMMAND m6_unix_socket_command_transport_tests)
 set_tests_properties(m6_unix_socket_command_transport PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_host_session_lease_tests M6HostSessionLeaseTests.cpp)
+target_link_libraries(m6_host_session_lease_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_host_session_lease COMMAND m6_host_session_lease_tests)
+set_tests_properties(m6_host_session_lease PROPERTIES TIMEOUT 30)

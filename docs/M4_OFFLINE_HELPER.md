@@ -40,6 +40,12 @@ This is an offline authorization model with a borrowed-socket transport primitiv
 
 The returned dispatcher identity is only the kernel-reported UID/GID tuple. Processes running as the same UID are not distinguished, and this does not verify an executable, code signature, or audit token. A privileged service must enforce the intended signing/installation policy separately. Safe Start snapshot/capability bootstrap, an installable/surviving helper service, a listener, a concrete system backend, and privileged operations remain unsupported. This transport is offline groundwork and does not change network state.
 
+## M6 host-wide session lease primitive
+
+`HostSessionLease` opens one fixed `llm_interceptor.session.lock` file relative to a caller-supplied trusted directory descriptor. It uses `openat` with `O_NOFOLLOW`, `O_CLOEXEC`, and `O_NONBLOCK`, validates that the directory is owned by the effective UID with mode `0700`, and validates that the opened lock is an effective-UID-owned regular file with mode `0600` and exactly one link. It then takes a nonblocking exclusive `flock`. Contention and unsafe/open/lock failures have separate status codes. The move-only RAII object releases the advisory lock and closes its descriptor; it never unlinks the file, avoiding pathname replacement races.
+
+This primitive coordinates cooperating processes only when every instance uses the same canonical private directory inode. It does not issue session tokens, authorize a caller, verify a session snapshot, or implement recovery. Production must supply the same already trusted, root-owned private directory descriptor to every helper and must not leak the lock descriptor to child processes. `O_CLOEXEC` prevents inheritance across `exec`, but a forked child that does not exec can still share the open-file-description lock. Tests use only owned private temporary directories; this primitive is not wired into `SystemOperations`, the GUI, or a privileged service.
+
 ## Injected operations and ownership
 
 The backend is borrowed and must outlive `NetworkSession`; all session methods/getters belong to its QObject thread. Operations return status without throwing. The backend must enforce a single host-wide lease across cooperating helper sessions, not merely a lock in one GUI object. It owns token issuance and must reject stale/nonowned tokens.
