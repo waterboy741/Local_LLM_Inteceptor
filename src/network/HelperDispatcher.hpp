@@ -23,6 +23,7 @@ class HelperDispatcher : public QObject {
     HelperDispatcher(SystemOperations &, const SessionSnapshot &permitted,
                      const VerifiedPeer &trusted, QByteArray capability, QObject *parent = nullptr,
                      MonotonicClock monotonicClock = {});
+    ~HelperDispatcher() override;
     bool dispatch(const VerifiedPeer &transportPeer, const HelperCommand &);
     bool ready() const;
     std::optional<qint64> trustedMonotonicNowMs() const;
@@ -44,5 +45,6 @@ class HelperDispatcher : public QObject {
     MonotonicClock monotonicClock_;
     bool scheduledWatchdogTick();
     void revokeIfCleaned();
+    void revokeCapability() noexcept;
 };
 } // namespace interceptor

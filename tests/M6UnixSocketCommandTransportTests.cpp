@@ -216,6 +216,8 @@ class M6UnixSocketCommandTransportTests : public QObject {
         rejected.append({frame(payload(3, capability(), anchor)), true}); // old Watchdog opcode
         rejected.append({frame(payload(0, capability(), anchor)), true}); // Start is unavailable
         rejected.append({frame(payload(1, QByteArray(31, 'a'), anchor)), true});
+        rejected.append({frame(payload(1, QByteArray(33, 'a'), anchor)), true});
+        rejected.append({frame(payload(1, QByteArray(128, 'a'), anchor)), true});
         rejected.append({frame(payload(1, QByteArray(129, 'a'), anchor)), true});
         rejected.append({frame(payload(1, capability(), QByteArray(65, 'x'))), true});
         rejected.append({frame(payload(1, capability(), anchor, QByteArrayLiteral("x"))), true});

@@ -218,11 +218,15 @@ M6 PF recovery orchestration groundwork (October 25, 2026): an offline `PfAnchor
 
 M6 concrete PF-anchor cleanup-verifier groundwork (October 25, 2026): `PfCommandAnchorCleanupVerifier` uses fixed, typed session-filter and session-translation rule queries against the snapshot's exact owned anchor, with a 3-second default (5-second maximum) timeout and 64 KiB output cap per query. It reports empty only if both bounded commands complete successfully with exit code zero and ASCII-whitespace-only output; recognized rule/counter content is nonempty, while malformed output or command uncertainty is unknown. It remains unwired from the coordinator's live path, GUI, and helper service, and no PF command was run by its fake-runner tests. An empty listing is not evidence of packet evaluation or transparent redirection.
 
+M6 helper-identity groundwork (October 25, 2026): an offline `HelperSessionIdentity` factory uses checked Apple Security entropy to produce a 16-byte-random lowercase-hex session ID and a 32-byte raw capability, failing closed without partial results. Its identity is move-only and wipes its owned capability bytes at destruction; dispatcher capability comparisons use equal-length validation followed by `timingsafe_bcmp`. This does not guarantee erasure of later copies and is unwired from helper startup/GUI/live operations. Deterministic entropy injection is private to the focused test fixture.
+
 PF journal slice validation: its focused test passed in debug, release, and sanitizer builds. Full local debug CTest runs were interrupted by macOS sleep on battery, producing timing failures in older M2/M5/Unix-socket tests; the previously failing M5 and Unix-socket tests passed when rerun in isolation while awake. GitHub Actions subsequently passed debug, release, and sanitizer for commit `a73cdb7` ([run 40242824300](https://github.com/waterboy741/Local_LLM_Inteceptor/actions/runs/40242824300)). No filesystem-sync failure injection or live PF test was performed.
 
 PF recovery coordinator slice validation: focused `m6_pf_anchor_recovery_coordinator_tests` passed in separate debug, release, and sanitizer builds. No full preset/CI validation or PF command execution was performed for this coordinator increment.
 
 PF anchor cleanup-verifier slice validation: focused `m6_pf_anchor_cleanup_verifier_tests` passed in separate debug, release, and sanitizer builds. No full preset/CI validation, PF command execution, or live-system verification was performed.
+
+Helper identity slice validation: the focused `m4_network`, Unix-socket transport, and helper-identity CTests passed 3/3 in separate debug, release, and sanitizer builds. The identity test uses injected deterministic entropy and never calls the system entropy provider. No live helper identity generation or capability use was performed.
 
 M6 availability does not gate completion of M0–M5. Live checks are separate opt-in work and must never be inferred from offline test success.
 

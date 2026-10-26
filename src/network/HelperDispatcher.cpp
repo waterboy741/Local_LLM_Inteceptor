@@ -1,6 +1,18 @@
+#define __STDC_WANT_LIB_EXT1__ 1
 #include "HelperDispatcher.hpp"
+#include "HelperSessionIdentity.hpp"
+
+#include <string.h>
+
 namespace interceptor {
 namespace {
+bool capabilityMatches(const QByteArray &candidate, const QByteArray &expected) {
+    if (candidate.size() != expected.size())
+        return false;
+    return timingsafe_bcmp(candidate.constData(), expected.constData(),
+                           static_cast<size_t>(expected.size())) == 0;
+}
+
 bool sameSnapshot(const SessionSnapshot &first, const SessionSnapshot &second) {
     const auto &a = first.config();
     const auto &b = second.config();
@@ -26,11 +38,20 @@ HelperDispatcher::HelperDispatcher(SystemOperations &operations, const SessionSn
       session_(operations, this), monotonicClock_(std::move(monotonicClock)) {
     connect(&session_, &NetworkSession::stateChanged, this, &HelperDispatcher::stateChanged);
 }
+HelperDispatcher::~HelperDispatcher() { revokeCapability(); }
+
+void HelperDispatcher::revokeCapability() noexcept {
+    if (!capability_.isEmpty())
+        (void)memset_s(capability_.data(), static_cast<rsize_t>(capability_.size()), 0,
+                       static_cast<rsize_t>(capability_.size()));
+    capability_.clear();
+}
+
 bool HelperDispatcher::ready() const {
     Q_ASSERT(QThread::currentThread() == thread());
     return !terminal_ && trusted_.transportAuthenticated && !trusted_.auditIdentity.isEmpty() &&
-           trusted_.auditIdentity.size() <= 256 && capability_.size() >= 32 &&
-           capability_.size() <= 128;
+           trusted_.auditIdentity.size() <= 256 &&
+           capability_.size() == HelperSessionIdentity::capabilityRandomBytes;
 }
 std::optional<qint64> HelperDispatcher::trustedMonotonicNowMs() const {
     Q_ASSERT(QThread::currentThread() == thread());
@@ -48,7 +69,8 @@ std::optional<qint64> HelperDispatcher::trustedMonotonicNowMs() const {
 bool HelperDispatcher::dispatch(const VerifiedPeer &peer, const HelperCommand &command) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!ready() || !peer.transportAuthenticated || peer.uid != trusted_.uid ||
-        peer.auditIdentity != trusted_.auditIdentity || command.capability != capability_ ||
+        peer.auditIdentity != trusted_.auditIdentity ||
+        !capabilityMatches(command.capability, capability_) ||
         command.anchor != permitted_.anchor() || command.nowMs < 0)
         return false;
     switch (command.type) {
@@ -114,8 +136,7 @@ bool HelperDispatcher::scheduledWatchdogTick() {
 void HelperDispatcher::revokeIfCleaned() {
     if (session_.state() == NetworkSession::State::Idle) {
         terminal_ = true;
-        capability_.fill(char(0));
-        capability_.clear();
+        revokeCapability();
     }
 }
 } // namespace interceptor

@@ -1,4 +1,5 @@
 #include "UnixSocketCommandTransport.hpp"
+#include "HelperSessionIdentity.hpp"
 
 #include "UnixPeerCredentials.hpp"
 
@@ -169,7 +170,7 @@ bool decodeCommand(const QByteArray &frame, HelperCommand *command, QString *err
 
     qsizetype offset = 2;
     const quint8 capabilityLength = static_cast<quint8>(frame.at(offset++));
-    if (capabilityLength < 32 || capabilityLength > 128 ||
+    if (capabilityLength != HelperSessionIdentity::capabilityRandomBytes ||
         frame.size() < offset + capabilityLength + 1)
         return reject(QStringLiteral("invalid_capability_length"));
     const QByteArray capability = frame.mid(offset, capabilityLength);
